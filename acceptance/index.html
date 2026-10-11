@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="ar" dir="ltr">
+<head>
+<meta charset="utf-8">
+<title>dsh-translate-this — acceptance page</title>
+<!--
+  Acceptance page for dsh-translate-this.
+
+  Rules of this file, on purpose:
+    * it imports NOTHING — no DSH, no upstream plugin, no framework, no CDN;
+    * its engine is a fixed stub (`translate()`), so every number below is about
+      the injection layer and nothing else;
+    * it simulates the two things that actually break a DOM injector under React:
+      (a) the app rewrites the text after we translated it, (b) the app reuses a
+      node for a different row;
+    * it prints PASS/FAIL for the four outcomes the 0.5 gate closes on.
+
+  What is *not* here: any model call, any network, any product code. The layer that
+  survives this page is what moves into the plugin — not the other way round.
+-->
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 14px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif;
+         background: #151517; color: #e8e8ea; }
+  header { padding: 14px 18px; border-bottom: 1px solid #2a2a2e; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .sub { color: #9a9aa2; font-size: 12px; }
+  main { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 0; height: calc(100vh - 60px); }
+  #left { padding: 18px; overflow: auto; }
+  #right { border-left: 1px solid #2a2a2e; padding: 14px; overflow: auto; }
+  .block { border: 1px solid #2a2a2e; border-radius: 10px; padding: 10px 12px; margin: 0 0 10px;
+           background: #1b1b1f; }
+  .block code { color: #9ad; }
+  .row { display: flex; gap: 8px; align-items: baseline; border-bottom: 1px solid #232327;
+         padding: 4px 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .row .tag { color: #9a9aa2; flex: none; }
+  .row .num { color: #6f6f78; flex: none; width: 28px; text-align: right; }
+  .logwrap { height: 150px; overflow: auto; border: 1px solid #2a2a2e; border-radius: 8px; background: #17171a; }
+  button { background: #26262c; color: #e8e8ea; border: 1px solid #34343c; border-radius: 8px;
+           padding: 6px 10px; cursor: pointer; font-size: 12px; margin: 0 6px 6px 0; }
+  button:hover { background: #2f2f37; }
+  button.primary { background: #2a4a8f; border-color: #35589f; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { text-align: start; border-bottom: 1px solid #26262b; padding: 5px 4px; vertical-align: top; }
+  .pass { color: #6ee7a8; font-weight: 600; }
+  .fail { color: #ff8b8b; font-weight: 600; }
+  .skip { color: #d8c37a; }
+  #statusPanel { position: fixed; inset-inline-end: 12px; bottom: 12px; z-index: 50;
+                 background: #202027; border: 1px solid #34343c; border-radius: 10px;
+                 padding: 8px 10px; font-size: 12px; box-shadow: 0 6px 20px #0008; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; }
+  .kv b { font-weight: 600; color: #cfcfe6; }
+  [data-dct-mark] { unicode-bidi: isolate; }
+  #log { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #9a9aa2;
+         white-space: pre-wrap; max-height: 160px; overflow: auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>dsh-translate-this — acceptance page</h1>
+  <div class="sub">محرّك ثابت · بلا شبكة · لا تستورد DSH ولا أي بلاقن. الطبقة التي تنجو هنا هي التي تُنقل إلى البلاقن.</div>
+</header>
+
+<main>
+  <div id="left">
+    <div class="block" id="b1"><span id="b1t">Streaming answer block. It will be rewritten twice after translation.</span></div>
+    <div class="block" id="b2"><span id="b2t">A second block, translated on demand only.</span></div>
+    <div class="block" id="b3"><span id="b3t">https://example.com/path and npx @deepseek-ai/dsh web must stay intact.</span></div>
+
+    <h3 style="font-size:13px;margin:16px 0 6px">A windowed list that recycles rows (like a log panel)</h3>
+    <div class="logwrap" id="logwrap"><div id="login"></div></div>
+
+    <div style="margin-top:14px">
+      <button class="primary" id="runAll">تشغيل الفحوص الأربعة</button>
+      <button id="translateAll">ترجم كل الكتل</button>
+      <button id="restoreAll">استرجاع الأصل</button>
+      <button id="streamBatches">بثّ دفعتين (يعيد كتابة الأصل)</button>
+      <button id="recycle">أعد تدوير الصفوف</button>
+      <button id="lateCall">نداء بطيء ثم إيقاف</button>
+      <button id="reset">تصفير</button>
+    </div>
+
+    <table id="results" style="margin-top:12px">
+      <thead><tr><th>النتيجة</th><th>الحالة</th><th>القياس</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="log" style="margin-top:10px"></div>
+  </div>
+
+  <div id="right">
+    <b>التشخيص</b>
+    <div id="counters" style="margin-top:8px"></div>
+    <p class="sub" style="margin-top:12px">ملاحظة: لوحة الحالة أسفل النافذة تُرسم <b>خارج</b> شجرة المحادثة (بوّابة إلى <code>document.body</code>) وموسومة <code>data-dct-ignore</code> — فيجب ألّا تُترجم أبداً.</p>
+  </div>
+</main>
+
+<!-- portaled OUTSIDE the conversation tree: the ignore rule must still cover it -->
+<div id="statusPanel" data-dct-ignore>
+  <div class="kv"><span>الحالة</span><b id="spState">جاهز</b></div>
+  <div class="kv"><span>طابور</span><b id="spQueue">0</b></div>
+  <div class="kv"><span>ترجمات</span><b id="spDone">0</b></div>
+</div>
+
+<script>
+/* ------------------------------------------------------------------ stub engine */
+/* Fixed, deterministic, offline. Latency is the only knob — it lets us test a late
+   result arriving after the user pressed restore. */
+const ENGINE = { latency: 0, calls: 0 };
+const DICT = new Map([
+  ['streaming answer block. it will be rewritten twice after translation.', 'كتلة ردّ متدفّقة. سيعاد كتابتها مرّتين بعد الترجمة.'],
+  ['a second block, translated on demand only.', 'كتلة ثانية، لا تُترجم إلا عند الطلب.'],
+  ['https://example.com/path and npx @deepseek-ai/dsh web must stay intact.',
+   'https://example.com/path و npx @deepseek-ai/dsh web يجب أن يبقيا كما هما.'],
+]);
+function translate(text) {
+  const delay = ENGINE.latency;
+  ENGINE.calls += 1;
+  return new Promise((resolve) => setTimeout(() => {
+    const hit = DICT.get(text.toLowerCase());
+    resolve(hit || ('«ترجمة» ' + text));
+  }, delay));
+}
+
+/* --------------------------------------------------------------- the client layer */
+const IGNORE = '[data-dct-ignore]';
+const MARK = 'data-dct-mark';           // our own marker: direction lives in CSS, not inline
+const DCT = {
+  enabled: true,
+  cache: new Map(),                     // key -> translation (content keyed, per plan §6.2)
+  records: new Map(),                   // node -> { source, translation, key, gen }
+  queue: [],
+  held: new Map(),                      // key -> { count, until }  the give-up rule
+  gen: 0,
+  counters: { requests: 0, injections: 0, reinjections: 0, giveUps: 0, droppedLate: 0,
+              flickerMs: 0, englishSince: new Map(), network: 0 },
+};
+
+const keyOf = (text) => 'en\u0001ar\u0001stub\u0001v1\u0001' + text;
+const norm = (s) => s.replace(/\s+/g, ' ').trim();
+const now = () => performance.now();
+const log = (msg) => { const el = document.getElementById('log');
+  el.textContent += msg + '\n'; el.scrollTop = el.scrollHeight; };
+
+function eligible(node) {
+  if (!DCT.enabled) return false;
+  if (!node || node.nodeType !== 3) return false;
+  const text = norm(node.nodeValue || '');
+  if (text.length < 8) return false;                       // too short to be prose
+  const parent = node.parentElement;
+  if (!parent) return false;
+  if (parent.closest(IGNORE)) return false;                // our own surfaces (portals included)
+  if (parent.closest('pre, code, textarea, input, [contenteditable="true"]')) return false;
+  const style = getComputedStyle(parent);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  return true;
+}
+
+/* Direction: never a wrapper, never the React parent's structure. We mark the nearest
+   block element that is safe to carry `dir` (no flex/grid: marking those reorders
+   their children) and let one CSS rule do the isolation. */
+function directionHost(node) {
+  let el = node.parentElement;
+  while (el && el !== document.body) {
+    const style = getComputedStyle(el);
+    if (style.display === 'flex' || style.display === 'grid' || style.display === 'inline-flex')
+      return null;
+    if (el.querySelector('button, a, input, select, textarea, [role="button"], [role="radio"]'))
+      return null;
+    if (el.children.length <= 1) return el;
+    el = el.parentElement;
+  }
+  return null;
+}
+
+function inject(node, translation) {
+  const source = norm(node.nodeValue || '');
+  const key = keyOf(source);
+  node.nodeValue = translation;                            // value only: no structure change
+  const host = directionHost(node);
+  if (host) { host.setAttribute(MARK, '1'); host.setAttribute('dir', 'rtl');
+              host.style.unicodeBidi = 'isolate'; }
+  DCT.records.set(node, { source, translation, key, gen: DCT.gen, host: host || null });
+  DCT.counters.injections += 1;
+  const since = DCT.counters.englishSince.get(node);
+  if (since !== undefined) {                                // measure the flicker window
+    DCT.counters.flickerMs += now() - since;
+    DCT.counters.englishSince.delete(node);
+  }
+  renderCounters();
+}
+
+async function request(node) {
+  const source = norm(node.nodeValue || '');
+  const key = keyOf(source);
+  const gen = DCT.gen;
+  const cached = DCT.cache.get(key);
+  if (cached !== undefined) { inject(node, cached); return; }
+  const hold = DCT.held.get(key);
+  if (hold && now() < hold.until) return;                   // we stopped fighting this key
+  DCT.counters.requests += 1;
+  renderCounters();
+  const out = await translate(source);
+  if (gen !== DCT.gen) { DCT.counters.droppedLate += 1; renderCounters(); return; }
+  if (!node.isConnected) return;
+  if (norm(node.nodeValue || '') !== source) { DCT.counters.droppedLate += 1; return; }
+  DCT.cache.set(key, out);
+  inject(node, out);
+}
+
+function schedule(node, recheck) {
+  if (recheck) { /* an element changed: its text children may need work */ }
+  if (DCT.queue.length < 500 && !DCT.queue.includes(node)) DCT.queue.push(node);
+  if (!DCT.pending) {
+    DCT.pending = true;
+    // not synchronous inside the observer: schedule to the next frame (plan §5 rule 6)
+    requestAnimationFrame(() => { DCT.pending = false; flush(); });
+  }
+  renderCounters();
+}
+
+function flush() {
+  const batch = DCT.queue.splice(0, DCT.queue.length);
+  const seen = new Set();
+  for (const item of batch) {
+    const nodes = item.nodeType === 3 ? [item]
+      : Array.from(item.childNodes).flatMap((c) => c.nodeType === 3 ? [c] : []);
+    for (const node of nodes) {
+      if (seen.has(node) || !eligible(node)) continue;
+      seen.add(node);
+      const text = norm(node.nodeValue || '');
+      const rec = DCT.records.get(node);
+      const cached = DCT.cache.get(keyOf(text));
+      if (cached !== undefined && text !== cached) {        // the app wrote the source back
+        const hold = DCT.held.get(keyOf(text)) || { count: 0, until: 0 };
+        hold.count += 1;
+        if (hold.count > 2) {                                // give up: stable English beats a strobe
+          hold.until = now() + 10000; DCT.held.set(keyOf(text), hold);
+          DCT.counters.giveUps += 1; DCT.cache.delete(keyOf(text));
+        } else {
+          DCT.held.set(keyOf(text), hold);
+          DCT.counters.reinjections += 1;
+          DCT.counters.englishSince.set(node, now());
+          inject(node, cached);                              // re-inject FROM CACHE: no request
+        }
+        continue;
+      }
+      if (rec && text !== rec.translation) {                 // recycled node: drop the record
+        DCT.records.delete(node);
+        if (rec.host) { rec.host.removeAttribute(MARK); rec.host.removeAttribute('dir');
+                        rec.host.style.unicodeBidi = ''; }
+      }
+      if (text && !DCT.records.has(node)) request(node);
+    }
+  }
+  renderCounters();
+}
+
+const observer = new MutationObserver((records) => {
+  if (!DCT.enabled) return;
+  for (const r of records) {
+    if (r.type === 'characterData') { schedule(r.target); continue; }
+    for (const added of r.addedNodes) schedule(added, true);
+    if (r.target && r.target.nodeType === 1) schedule(r.target, true);
+  }
+});
+observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+/* --------------------------------------------------------------- restore & reset */
+function restoreAll() {
+  DCT.gen += 1;                                              // late results are now dead
+  DCT.queue.length = 0;
+  let restored = 0;
+  for (const [node, rec] of DCT.records) {
+    if (node.isConnected && node.nodeValue === rec.translation) {
+      node.nodeValue = rec.source; restored += 1;
+    }
+    if (rec.host) { rec.host.removeAttribute(MARK); rec.host.removeAttribute('dir');
+                    rec.host.style.unicodeBidi = ''; }
+  }
+  DCT.records.clear();
+  document.querySelectorAll('[' + MARK + ']').forEach((el) => {
+    el.removeAttribute(MARK); el.removeAttribute('dir'); el.style.unicodeBidi = ''; });
+  log('restore: ' + restored + ' node(s) back to source');
+  renderCounters();
+  return restored;
+}
+
+/* ------------------------------------------------------------------ the harness ---- */
+/* A React-like re-renderer: `paint` either updates the existing text node's value or
+   replaces the node outright — both happen in real React. */
+function paint(spanId, text, mode) {
+  const span = document.getElementById(spanId);
+  const old = span.firstChild;
+  if (mode === 'value' && old && old.nodeType === 3) { old.nodeValue = text; return; }
+  span.textContent = text;
+}
+
+function buildLog(rows) {
+  const host = document.getElementById('login');
+  host.textContent = '';
+  for (let i = 0; i < rows; i += 1) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.dataset.row = String(i);
+    const num = document.createElement('span'); num.className = 'num'; num.textContent = String(i);
+    const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = 'tag';
+    const body = document.createElement('span');
+    body.textContent = 'log line ' + i + ': device connected, waiting for events';
+    row.append(num, tag, body);
+    host.append(row);
+  }
+}
+
+/* ------------------------------------------------------------------- the checks --- */
+const RESULTS = [];
+const record = (name, ok, detail) => { RESULTS.push({ name, ok, detail }); renderResults(); };
+
+async function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+async function check1_streaming() {
+  resetQuiet();
+  paint('b1t', 'Streaming answer block. It will be rewritten twice after translation.', 'value');
+  await wait(30);
+  const before = DCT.counters.requests;
+  document.getElementById('translateAll').click();
+  await wait(60);
+  const arabic = document.getElementById('b1t').textContent;
+  const isArabic = /[\u0600-\u06FF]/.test(arabic);
+  // the app rewrites the ORIGINAL text twice, after we translated it
+  paint('b1t', 'Streaming answer block. It will be rewritten twice after translation.', 'node');
+  await wait(40);
+  paint('b1t', 'Streaming answer block. It will be rewritten twice after translation.', 'value');
+  await wait(60);
+  const after = document.getElementById('b1t').textContent;
+  const stillArabic = /[\u0600-\u06FF]/.test(after);
+  const extraRequests = DCT.counters.requests - before;
+  const flicker = Math.round(DCT.counters.flickerMs);
+  record('1 · بثّ يعيد كتابة الأصل: العربية تبقى، بلا وميض ٥٠٠ مللي، وبلا حلقة',
+    isArabic && stillArabic && flicker < 500 && DCT.counters.giveUps === 0,
+    `عربية=${isArabic && stillArabic} · وميض=${flicker}ms · طلبات إضافية=${extraRequests} · استسلام=${DCT.counters.giveUps}`);
+}
+
+async function check2_recycling() {
+  resetQuiet();
+  buildLog(40);
+  const before = DCT.counters.requests;
+  document.getElementById('translateAll').click();
+  await wait(80);
+  const rows = () => Array.from(document.querySelectorAll('#login .row'));
+  const first = rows()[0];
+  const firstBody = first.lastChild;
+  const translated = firstBody.nodeValue;
+  const wasArabic = /[\u0600-\u06FF]/.test(translated || '');
+  // recycle: the SAME node now carries a different row's text (as a windowed list does)
+  firstBody.nodeValue = 'log line 999: a different row reusing this node';
+  await wait(60);
+  const nowText = firstBody.nodeValue;
+  const leaked = nowText === translated;
+  const restored = restoreAll();
+  const verbatim = rows()[0].lastChild.nodeValue === 'log line 999: a different row reusing this node';
+  record('2 · إعادة تدوير العقدة: لا ترجمة قديمة، والاسترجاع حرفي',
+    wasArabic && !leaked && verbatim,
+    `كانت عربية=${wasArabic} · تسرّبت القديمة=${leaked} · استُرجع حرفياً=${verbatim} · عُقد=${restored}`);
+}
+
+async function check3_lateResult() {
+  resetQuiet();
+  paint('b2t', 'A second block, translated on demand only.', 'value');
+  await wait(20);
+  ENGINE.latency = 400;                                     // a slow engine
+  const dropped = DCT.counters.droppedLate;
+  document.getElementById('translateAll').click();
+  await wait(60);
+  restoreAll();                                             // stop + restore while in flight
+  await wait(500);                                          // the late result arrives now
+  const after = document.getElementById('b2t').textContent;
+  const unchanged = after === 'A second block, translated on demand only.';
+  record('3 · إيقاف ثم نتيجة متأخرة: الشاشة لا تتغيّر (جيل الطلب)',
+    unchanged && DCT.counters.droppedLate > dropped,
+    `الشاشة كما هي=${unchanged} · نتائج مُهمَلة=${DCT.counters.droppedLate - dropped}`);
+  ENGINE.latency = 0;
+}
+
+async function check4_zeroNetworkAndIgnoreRoot() {
+  resetQuiet();
+  const external = performance.getEntriesByType('resource')
+    .filter((e) => !e.name.startsWith('file:') && !e.name.startsWith('blob:'));
+  // translate everything, INCLUDING the portaled panel's subtree (it is marked)
+  document.getElementById('translateAll').click();
+  await wait(140);
+  const panel = document.getElementById('statusPanel');
+  const panelUntouched = !/[\u0600-\u06FF]/.test(
+    Array.from(panel.querySelectorAll(':not([data-dct-ignore])')).map((n) => n.textContent).join(''));
+  const marked = panel.hasAttribute('data-dct-ignore') && panel.parentElement === document.body;
+  record('4 · صفر شبكة · ولوحة الحالة (بوّابة إلى body) لا تُترجم',
+    external.length === 0 && DCT.counters.network === 0 && panelUntouched && marked,
+    `طلبات خارجية=${external.length} · اعتراضات الشبكة=${DCT.counters.network} · اللوحة سليمة=${panelUntouched} · موسومة ومُبوَّبة=${marked}`);
+}
+
+async function check5_guards() {
+  const flexRow = document.createElement('div');
+  flexRow.style.display = 'flex';
+  const cell = document.createElement('span');
+  cell.textContent = 'A flex row cell that must never carry direction';
+  flexRow.append(cell); document.getElementById('left').append(flexRow);
+  await wait(40);
+  const before = DCT.counters.requests;
+  document.getElementById('translateAll').click();
+  await wait(80);
+  const hasDir = flexRow.hasAttribute('dir') || flexRow.hasAttribute(MARK);
+  const code = document.createElement('pre');
+  code.textContent = 'const x = "A code block that must never be translated";';
+  document.getElementById('left').append(code);
+  await wait(60);
+  const codeText = code.textContent;
+  record('5 · المحرّمات: صف flex لا يأخذ اتجاهاً، والكود لا يُترجم',
+    !hasDir && codeText.includes('must never be translated'),
+    `flex أخذ اتجاهاً=${hasDir} · الكود كما هو=${codeText.includes('must never be translated')} · طلبات=${DCT.counters.requests - before}`);
+}
+
+/* --------------------------------------------------------------------- reporting -- */
+function renderResults() {
+  const tbody = document.querySelector('#results tbody');
+  tbody.textContent = '';
+  for (const r of RESULTS) {
+    const tr = document.createElement('tr');
+    const a = document.createElement('td'); a.textContent = r.name;
+    const b = document.createElement('td'); b.className = r.ok ? 'pass' : 'fail';
+    b.textContent = r.ok ? 'PASS' : 'FAIL';
+    const c = document.createElement('td'); c.textContent = r.detail || '';
+    tr.append(a, b, c); tbody.append(tr);
+  }
+}
+
+function renderCounters() {
+  const c = DCT.counters;
+  const rows = [
+    ['طلبات المحرّك', c.requests], ['حقن', c.injections], ['إعادة حقن من الكاش', c.reinjections],
+    ['استسلام (حلقة)', c.giveUps], ['نتائج متأخرة مُهمَلة', c.droppedLate],
+    ['وميض إنجليزي', Math.round(c.flickerMs) + ' ms'], ['مخالفات شبكة', c.network],
+  ];
+  document.getElementById('counters').innerHTML = rows
+    .map(([k, v]) => `<div class="kv"><span>${k}</span><b>${v}</b></div>`).join('');
+  document.getElementById('spQueue').textContent = String(DCT.queue.length);
+  document.getElementById('spDone').textContent = String(c.injections);
+}
+
+function resetQuiet() {
+  restoreAll();
+  DCT.counters.requests = 0; DCT.counters.injections = 0; DCT.counters.reinjections = 0;
+  DCT.counters.giveUps = 0; DCT.counters.droppedLate = 0; DCT.counters.flickerMs = 0;
+  DCT.counters.englishSince.clear(); DCT.held.clear();
+  document.getElementById('log').textContent = '';
+  renderCounters();
+}
+
+async function runAll() {
+  RESULTS.length = 0; renderResults();
+  document.getElementById('spState').textContent = 'يجرى…';
+  await check1_streaming();
+  await check2_recycling();
+  await check3_lateResult();
+  await check4_zeroNetworkAndIgnoreRoot();
+  await check5_guards();
+  const failed = RESULTS.filter((r) => !r.ok).length;
+  document.getElementById('spState').textContent = failed === 0 ? 'كل الفحوص نجحت' : (failed + ' فشل');
+  log('== ' + (RESULTS.length - failed) + '/' + RESULTS.length + ' PASS ==');
+  window.__ACCEPTANCE__ = { results: RESULTS.slice(), counters: { ...DCT.counters } };
+}
+
+/* network guard: the page must make zero requests even when translating */
+const realFetch = window.fetch;
+window.fetch = function (...args) { DCT.counters.network += 1; renderCounters(); return realFetch.apply(this, args); };
+const RealXHR = window.XMLHttpRequest;
+window.XMLHttpRequest = function () { DCT.counters.network += 1; renderCounters(); return new RealXHR(); };
+
+/* wiring */
+document.getElementById('runAll').addEventListener('click', runAll);
+document.getElementById('translateAll').addEventListener('click', () => {
+  document.querySelectorAll('#left .block > span').forEach((s) => schedule(s, true));
+});
+document.getElementById('restoreAll').addEventListener('click', () => restoreAll());
+document.getElementById('streamBatches').addEventListener('click', async () => {
+  paint('b1t', 'Streaming answer block. It will be rewritten twice after translation.', 'node');
+  await wait(120);
+  paint('b1t', 'Streaming answer block. It will be rewritten twice after translation.', 'value');
+});
+document.getElementById('recycle').addEventListener('click', () => {
+  const rows = document.querySelectorAll('#login .row');
+  if (rows.length > 1) rows[0].lastChild.nodeValue = 'log line 999: a different row reusing this node';
+});
+document.getElementById('lateCall').addEventListener('click', async () => {
+  ENGINE.latency = 400; document.getElementById('translateAll').click();
+  await wait(60); restoreAll(); await wait(500); ENGINE.latency = 0;
+});
+document.getElementById('reset').addEventListener('click', () => { resetQuiet(); RESULTS.length = 0; renderResults(); });
+
+buildLog(40);
+renderCounters();
+log('جاهز. اضغط «تشغيل الفحوص الأربعة».');
+</script>
+</body>
+</html>

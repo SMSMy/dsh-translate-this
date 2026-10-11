@@ -1,0 +1,9 @@
+# tooling / build output
+node_modules/
+.cache/
+.tmp/
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db
