@@ -89,7 +89,7 @@
     <div class="logwrap" id="logwrap"><div id="login"></div></div>
 
     <div style="margin-top:14px" data-dct-ignore>
-      <button class="primary" id="runAll">تشغيل الفحوص الأربعة</button>
+      <button class="primary" id="runAll">تشغيل الفحوص الثمانية</button>
       <button id="translateAll">ترجم كل الكتل</button>
       <button id="restoreAll">استرجاع الأصل</button>
       <button id="streamBatches">بثّ دفعتين (يعيد كتابة الأصل)</button>
@@ -133,8 +133,10 @@
 <script>
 /* ------------------------------------------------------------------ stub engine */
 /* Fixed, deterministic, offline. Latency is the only knob — it lets us test a late
-   result arriving after the user pressed restore. */
-const ENGINE = { latency: 0, calls: 0 };
+   result arriving after the user pressed restore. `mode` is the knob 0.6 part two needs:
+   a batch can come back short (the markers were eaten) or be refused outright, and both
+   have to end in the same place — nothing cached, nothing injected, a red line. */
+const ENGINE = { latency: 0, calls: 0, mode: 'ok' };
 const DICT = new Map([
   ['streaming answer block. it will be rewritten twice after translation.', 'كتلة ردّ متدفّقة. سيعاد كتابتها مرّتين بعد الترجمة.'],
   ['a second block, translated on demand only.', 'كتلة ثانية، لا تُترجم إلا عند الطلب.'],
@@ -148,6 +150,24 @@ function translate(text) {
     const hit = DICT.get(text.toLowerCase());
     resolve(hit || ('«ترجمة» ' + text));
   }, delay));
+}
+/* The batch entry point the layer speaks since 0.6 part two: ONE call for N segments.
+   `mode: 'short'` drops the last segment — the shape a host would return if its alignment
+   check were removed — so the LAYER's own count check can be seen refusing it. */
+async function translateBatch(texts) {
+  const out = [];
+  for (const t of texts) out.push(await translate(t));
+  if (ENGINE.mode === 'short') out.pop();
+  ENGINE.calls -= texts.length - 1;          // one call, not N: the counter must mean calls
+  // The usage shape a LIVE host reported (measured on the 3099 test host):
+  // `inputTokens` · `outputTokens` · `cacheReadTokens` · `cacheWriteTokens` — and the counts are
+  // DISJOINT, so the billed input is their sum. `ENGINE.usage = false` models a model that
+  // reports nothing at all, which the counter must show as «غير معروف» rather than as zero.
+  const usage = ENGINE.usage === false ? null : {
+    inputTokens: 10 * texts.length, outputTokens: 20 * texts.length,
+    cacheReadTokens: 3 * texts.length, cacheWriteTokens: texts.length, totalTokens: 0
+  };
+  return { segments: out, usage };
 }
 
 /* ------------------------------------------------- the layer (single source) ----
@@ -178,6 +198,9 @@ const pageEngine = {
   kind: 'page-stub',
   label: 'محرّك ثابت — بلا شبكة',
   translate: (text) => translate(text),         // the page's deterministic stub, latency knob included
+  translateBatch: (texts) => (ENGINE.mode === 'reject'
+    ? Promise.reject(Object.assign(new Error('محاذاة الدفعة فشلت: markers 1/2'), { code: 'ALIGNMENT_FAILED' }))
+    : translateBatch(texts)),
 };
 
 const layer = MODULE
@@ -193,13 +216,18 @@ const INTERNALS = layer ? layer._internals : null;
    layer stays the plugin's. Nothing in here implements translation. */
 const EMPTY = {
   counters: { requests: 0, injections: 0, reinjections: 0, giveUps: 0, droppedLate: 0,
-              flickerMs: 0, network: 0, englishSince: new Map() },
-  records: new Map(), cache: new Map(), held: new Map(), queue: [], rate: [],
-  gen: 0, enabled: false, loopFlag: false,
+              flickerMs: 0, network: 0, englishSince: new Map(),
+              batchCalls: 0, segmentsRequested: 0, segmentHits: 0, blocks: 0, failedBatches: 0,
+              alignmentFailures: 0, volatileSkipped: 0, settleDeferrals: 0, usageCalls: 0,
+              usageUnknown: 0, tokensIn: 0, tokensOut: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+              lastCallMs: 0, lastUsage: null },
+  records: new Map(), cache: new Map(), segments: new Map(), held: new Map(), queue: [], rate: [],
+  gen: 0, enabled: false, loopFlag: false, debug: null,
 };
 const DCT = layer ? {
   counters: layer.counters,
   get records() { return INTERNALS.records }, get cache() { return INTERNALS.cache },
+  get segments() { return layer.segments },   get debug() { return layer.debug },
   get held() { return INTERNALS.held },       get queue() { return INTERNALS.queue },
   get rate() { return INTERNALS.rate },       set rate(v) { INTERNALS.rate = v },
   get gen() { return INTERNALS.gen },         set gen(v) { INTERNALS.gen = v },
@@ -270,10 +298,13 @@ async function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
 async function check1_streaming() {
   resetQuiet();
   paint('b1t', 'Streaming answer block. It will be rewritten twice after translation.', 'value');
-  await wait(30);
+  // The settle window (§6.4): a block is translated once its text has stopped moving, so the
+  // fixture must be quiet for SETTLE_MS before the click. Every check that writes a fixture
+  // and clicks immediately now waits — that timing IS the product rule, not test padding.
+  await wait(560);
   const before = DCT.counters.requests;
   document.getElementById('translateAll').click();
-  await wait(60);
+  await wait(150);
   const arabic = document.getElementById('b1t').textContent;
   const isArabic = /[\u0600-\u06FF]/.test(arabic);
   // the app rewrites the ORIGINAL text twice, after we translated it
@@ -293,9 +324,10 @@ async function check1_streaming() {
 async function check2_recycling() {
   resetQuiet();
   buildLog(40);
+  await wait(560);                                           // the settle window (§6.4)
   const before = DCT.counters.requests;
   document.getElementById('translateAll').click();
-  await wait(80);
+  await wait(250);
   const rows = () => Array.from(document.querySelectorAll('#login .row'));
   const first = rows()[0];
   // The row's body is a span; the *text* is its first child. Reading `lastChild` here
@@ -319,18 +351,31 @@ async function check2_recycling() {
 async function check3_lateResult() {
   resetQuiet();
   paint('b2t', 'A second block, translated on demand only.', 'value');
-  await wait(20);
+  await wait(560);                                          // the settle window (§6.4)
   ENGINE.latency = 400;                                     // a slow engine
   const dropped = DCT.counters.droppedLate;
+  const calls = DCT.counters.requests;
   document.getElementById('translateAll').click();
-  await wait(60);
+  // Wait until the call is genuinely IN FLIGHT before stopping it. A fixed sleep was flaky
+  // here and measurably so: with the settle window the request starts ~500 ms after the click,
+  // so "wait 60 ms then restore" raced the scheduler — the same check stopped a live call with
+  // frames and stopped nothing through the fallback (reported «نتائج مُهمَلة=0», 6/8).
+  const startedAt = Date.now();
+  while (DCT.counters.requests === calls && Date.now() - startedAt < 3000) await wait(25);
+  const inFlight = DCT.counters.requests > calls;
   restoreAll();                                             // stop + restore while in flight
-  await wait(500);                                          // the late result arrives now
+  // Wait for the late results to actually LAND. A fixed 1.4 s was not enough and the earlier
+  // failure was read as "the generation guard did not fire": the probe showed inflight=6 with
+  // failed=0 — the batches were still travelling, not dropped. Poll the layer's own in-flight
+  // count instead of guessing how long a batch takes.
+  const landingAt = Date.now();
+  while (layer.inflight > 0 && Date.now() - landingAt < 8000) await wait(50);
   const after = document.getElementById('b2t').textContent;
   const unchanged = after === 'A second block, translated on demand only.';
+  const landed = layer.inflight === 0;
   record('3 · إيقاف ثم نتيجة متأخرة: الشاشة لا تتغيّر (جيل الطلب)',
-    unchanged && DCT.counters.droppedLate > dropped,
-    `الشاشة كما هي=${unchanged} · نتائج مُهمَلة=${DCT.counters.droppedLate - dropped}`);
+    inFlight && unchanged && DCT.counters.droppedLate > dropped,
+    `النداء جارٍ عند الإيقاف=${inFlight} · الشاشة كما هي=${unchanged} · نتائج مُهمَلة=${DCT.counters.droppedLate - dropped} · هبطت كلها=${landed}`);
   ENGINE.latency = 0;
 }
 
@@ -353,7 +398,7 @@ async function check4_zeroNetworkAndIgnoreRoot() {
   const beforeLabels = labels();
   // translate everything, INCLUDING the portaled panel's subtree (it is marked)
   document.getElementById('translateAll').click();
-  await wait(140);
+  await wait(400);
   const fresh = performance.getEntriesByType('resource').filter((e) => !seenAtStart.includes(e.name));
   const panelTextNodes = [];
   (function walk(n) {
@@ -363,9 +408,12 @@ async function check4_zeroNetworkAndIgnoreRoot() {
   const marked = panel.hasAttribute('data-dct-ignore') && panel.parentElement === document.body;
   const panelUntouched = recorded === 0 &&
     panel.querySelectorAll('[' + MARK + ']').length === 0 && beforeLabels === labels();
+  // `injections > 0` is not decoration: a check that passes because nothing was translated
+  // at all is the failure mode this project already paid for once (three of five checks
+  // measured nothing). This one must prove the layer RAN and still kept its hands off the panel.
   record('4 · صفر شبكة · ولوحة الحالة (بوّابة إلى body) لا تُترجم',
-    fresh.length === 0 && DCT.counters.network === 0 && panelUntouched && marked,
-    `طلبات جديدة=${fresh.length}${fresh.length ? ' [' + fresh.map((e) => e.name.slice(0, 48)).join(' | ') + ']' : ''} · اعتراضات الشبكة=${DCT.counters.network} · عقد مرصودة داخل اللوحة=${recorded} · تسميات سليمة=${beforeLabels === labels()} · موسومة ومُبوَّبة=${marked} · سابقة للقياس=${seenAtStart.length}`);
+    fresh.length === 0 && DCT.counters.network === 0 && panelUntouched && marked && DCT.counters.injections > 0,
+    `طلبات جديدة=${fresh.length}${fresh.length ? ' [' + fresh.map((e) => e.name.slice(0, 48)).join(' | ') + ']' : ''} · اعتراضات الشبكة=${DCT.counters.network} · عقد مرصودة داخل اللوحة=${recorded} · تسميات سليمة=${beforeLabels === labels()} · موسومة ومُبوَّبة=${marked} · حقن=${DCT.counters.injections} · سابقة للقياس=${seenAtStart.length}`);
 }
 
 async function check5_guards() {
@@ -381,10 +429,10 @@ async function check5_guards() {
   stage.append(code);
   document.getElementById('left').append(stage);
   rescan();
-  await wait(40);
+  await wait(600);                                          // the settle window (§6.4)
   const before = DCT.counters.requests;
   document.getElementById('translateAll').click();
-  await wait(120);
+  await wait(300);
   const hasDir = flexRow.hasAttribute('dir') || flexRow.hasAttribute(MARK);
   const codeText = code.textContent;
   const flexTranslated = /[\u0600-\u06FF]/.test(cell.textContent);
@@ -393,7 +441,196 @@ async function check5_guards() {
     `flex أخذ اتجاهاً=${hasDir} · خلية flex تُرجمت=${flexTranslated} · الكود كما هو=${codeText.includes('must never be translated')} · طلبات=${DCT.counters.requests - before}`);
 }
 
+/* ------------------------------------------------- 0.6 part two: batches and segments --- */
+
+/**
+ * Leave exactly ONE prose fixture in the translated surfaces, so a check measures its own
+ * fixture and nothing else. Without this, `translateAll` also translates the leftovers of
+ * earlier checks — and then "nothing was cached" or "exactly one call" would be measuring
+ * somebody else's block. (Measured the hard way in this project: three of five checks once
+ * measured nothing at all.)
+ */
+function onlyFixture(text) {
+  for (const id of ['b1t', 'b3t']) { const el = document.getElementById(id); if (el) el.textContent = ''; }
+  document.getElementById('login').textContent = '';
+  const stage = document.querySelector('#left > [data-test-stage]');
+  if (stage) stage.remove();
+  paint('b2t', text, 'value');
+  rescan();
+}
+
+/**
+ * The alignment contract at the LAYER's end. The host refuses a misaligned batch and its
+ * parser has a gate of its own (acceptance/protocol.mjs: five ways to break it, each named);
+ * but the layer promises something too — whatever the engine says, a batch that does not
+ * come back whole is stored NOWHERE and injected NOWHERE. Two shapes are driven here because
+ * they fail differently: an engine that rejects, and an engine that quietly returns fewer
+ * segments than it was given (which is what a host missing its check would look like).
+ */
+async function check6_alignmentDropsBatch() {
+  resetQuiet();
+  onlyFixture('A block whose batch will come back broken. It must stay English.');
+  await wait(560);
+  const beforeCalls = DCT.counters.requests;
+  ENGINE.mode = 'reject';
+  document.getElementById('translateAll').click();
+  await wait(300);
+  ENGINE.mode = 'short';                    // the same failure, silent at the engine's end
+  document.getElementById('translateAll').click();
+  await wait(300);
+  ENGINE.mode = 'ok';
+  const text = document.getElementById('b2t').textContent;
+  const stillEnglish = /will come back broken/.test(text);
+  const storedSegments = DCT.segments.size;
+  record('6 · فشل المحاذاة: تُرمى الدفعة كاملة — لا كاش مقطع ولا كاش كتلة ولا حقن جزئي',
+    stillEnglish && storedSegments === 0 && DCT.counters.alignmentFailures >= 2 && DCT.cache.size === 0 && !!DCT.debug,
+    `بقي إنجليزيًّا=${stillEnglish} · مقاطع مخزّنة=${storedSegments} · نداءات=${DCT.counters.requests - beforeCalls} · فشل محاذاة=${DCT.counters.alignmentFailures} · كاش الكتل=${DCT.cache.size} · سطر أحمر=${!!DCT.debug}`);
+}
+
+/**
+ * The criterion 0.6 is accepted on (PLAN.md §8): unchanged text costs ZERO calls, and one
+ * changed sentence costs ONE segment — not one block, not one paragraph.
+ *
+ * The block cache is deliberately emptied between the two halves. Leaving it warm would make
+ * this check pass without the segment cache existing at all, which is exactly the class of
+ * measurement error this project has already paid for.
+ */
+async function check7_segmentCache() {
+  resetQuiet();
+  onlyFixture('A first sentence that is long enough. A second sentence that is long enough too.');
+  await wait(560);
+  const t0 = DCT.counters.requests;
+  const s0 = DCT.counters.segmentsRequested;
+  document.getElementById('translateAll').click();
+  await wait(400);
+  const firstOk = /[\u0600-\u06FF]/.test(document.getElementById('b2t').textContent);
+  const calls1 = DCT.counters.requests - t0;
+  const segs1 = DCT.counters.segmentsRequested - s0;
+
+  DCT.cache.clear();                        // the SEGMENT cache stays warm — that is the claim
+  restoreAll();
+  await wait(40);
+  const t1 = DCT.counters.requests;
+  document.getElementById('translateAll').click();
+  await wait(400);
+  const secondOk = /[\u0600-\u06FF]/.test(document.getElementById('b2t').textContent);
+  const calls2 = DCT.counters.requests - t1;
+
+  DCT.cache.clear();
+  restoreAll();
+  paint('b2t', 'A first sentence that CHANGED. A second sentence that is long enough too.', 'value');
+  await wait(560);
+  const t2 = DCT.counters.requests;
+  const s2 = DCT.counters.segmentsRequested;
+  document.getElementById('translateAll').click();
+  await wait(400);
+  const changedOk = /[\u0600-\u06FF]/.test(document.getElementById('b2t').textContent);
+  const calls3 = DCT.counters.requests - t2;
+  const segs3 = DCT.counters.segmentsRequested - s2;
+
+  record('7 · نصّ ثابت ⇒ صفر طلبات · وجملة واحدة متغيّرة ⇒ مقطع واحد فقط',
+    firstOk && calls1 === 1 && segs1 === 2 && secondOk && calls2 === 0 && changedOk && calls3 === 1 && segs3 === 1,
+    `أول ترجمة: نداءات=${calls1} مقاطع=${segs1} · إعادة بنفس النصّ بعد تفريغ كاش الكتل: نداءات=${calls2} · بعد تغيير جملة: نداءات=${calls3} مقاطع=${segs3}`);
+}
+
+/**
+ * PLAN.md §6.4 and rule 2 of §5 in one check: a block still being written is not translated
+ * yet (the click waits out the settle window instead of paying for half a sentence), and a
+ * live readout — digits and units, nothing else — is never translated at all.
+ *
+ * Both halves are timing claims, so both are asserted on numbers rather than on "it looked
+ * right": zero calls inside the window, exactly one after it, and an untouched counter.
+ */
+async function check8_volatility() {
+  resetQuiet();
+  onlyFixture('A streaming answer that is still being written right now.');
+  paint('b2t', 'A streaming answer that is still being written right now.', 'value');   // the app writes again, right before the click
+  document.getElementById('translateAll').click();
+  await wait(200);
+  const callsDuringSettle = DCT.counters.requests;
+  const deferrals = DCT.counters.settleDeferrals;              // proof the wait was a deferral, not luck
+  await wait(900);
+  const settledArabic = /[\u0600-\u06FF]/.test(document.getElementById('b2t').textContent);
+  const callsAfterSettle = DCT.counters.requests;
+
+  const stage = document.createElement('div');
+  stage.setAttribute('data-test-stage', '');
+  const live = document.createElement('span');
+  live.textContent = '12,345 tokens · 3.2 s';
+  stage.append(live);
+  document.getElementById('left').append(stage);
+  rescan();
+  await wait(600);
+  document.getElementById('translateAll').click();
+  await wait(400);
+  const liveUntouched = live.textContent === '12,345 tokens · 3.2 s';
+
+  // The BURST half of the same rule: a block that keeps changing right now — a counter
+  // rewriting itself — carries ordinary words (so the first-sight test cannot see it) and must
+  // be caught by its history instead. Without this half, "no digits-only text is translated"
+  // would be the whole claim, and a churning sentence would still cost tokens.
+  const churnStage = document.createElement('div');
+  churnStage.setAttribute('data-test-stage', '');
+  const churn = document.createElement('span');
+  churn.textContent = 'Reading the file one moment please';
+  churnStage.append(churn);
+  document.getElementById('left').append(churnStage);
+  rescan();
+  for (let i = 0; i < 4; i += 1) { churn.firstChild.nodeValue = 'Reading the file one moment please ' + i; await wait(120) }
+  const churnText = churn.textContent;
+  await wait(600);
+  document.getElementById('translateAll').click();
+  await wait(400);
+  const churnUntouched = churn.textContent === churnText && !/[\u0600-\u06FF]/.test(churn.textContent);
+  churnStage.remove();
+
+  record('8 · التقلّب: لا ترجمة داخل نافذة الاستقرار، والحيّ (أرقام ووحدات) لا يُترجم',
+    callsDuringSettle === 0 && callsAfterSettle === 1 && settledArabic && liveUntouched && DCT.counters.volatileSkipped >= 1 &&
+    churnUntouched && DCT.counters.volatileSkipped >= 2,
+    `نداءات داخل النافذة=${callsDuringSettle} · بعد النافذة=${callsAfterSettle} · تأجيل استقرار=${deferrals} · عربية=${settledArabic} · الحيّ كما هو=${liveUntouched} · النصّ المتقلّب كما هو=${churnUntouched} · مُخطَّى حيّ=${DCT.counters.volatileSkipped}`);
+  stage.remove();
+}
+
 /* --------------------------------------------------------------------- reporting -- */
+/**
+ * The cost counter reads the fields the STREAM carries and sums them the way the type
+ * definitions say they must be summed (the counts are disjoint, so billed input is
+ * `inputTokens + cacheReadTokens + cacheWriteTokens` — verified against a live call, where
+ * showing `inputTokens` alone would have under-reported 251 of 379 tokens).
+ *
+ * Two branches, because a counter that invents a number is worse than no counter: with usage
+ * it must add up, and without usage it must say «غير معروف» and add nothing.
+ */
+async function check9_costCounter() {
+  resetQuiet();
+  ENGINE.usage = true;
+  onlyFixture('A sentence long enough for the counter. And a second sentence right here.');
+  await wait(560);
+  const t0 = { in: DCT.counters.tokensIn, out: DCT.counters.tokensOut, calls: DCT.counters.usageCalls, read: DCT.counters.cacheReadTokens };
+  document.getElementById('translateAll').click();
+  await wait(400);
+  const inDelta = DCT.counters.tokensIn - t0.in;
+  const outDelta = DCT.counters.tokensOut - t0.out;
+  const callsDelta = DCT.counters.usageCalls - t0.calls;
+  const readDelta = DCT.counters.cacheReadTokens - t0.read;
+
+  ENGINE.usage = false;                      // the model reports nothing: the counter must not invent
+  DCT.clearCache();
+  restoreAll();
+  paint('b2t', 'A different sentence for the unknown branch. With a second sentence as well.', 'value');
+  await wait(560);
+  const u0 = { in: DCT.counters.tokensIn, out: DCT.counters.tokensOut, unknown: DCT.counters.usageUnknown };
+  document.getElementById('translateAll').click();
+  await wait(400);
+  const unchanged = DCT.counters.tokensIn === u0.in && DCT.counters.tokensOut === u0.out;
+  const unknownGrew = DCT.counters.usageUnknown > u0.unknown;
+  ENGINE.usage = true;
+
+  record('9 · عدّاد الكلفة: يقرأ حقول usage المقيسة ويجمعها، ويقول «غير معروف» بدل صفر',
+    inDelta === 28 && outDelta === 40 && callsDelta === 1 && readDelta === 6 && unchanged && unknownGrew,
+    `دخل=${inDelta} (منها كاش مقروء ${readDelta}) · خرج=${outDelta} · نداءات بإبلاغ=${callsDelta} · بلا إبلاغ بقي الرقم=${unchanged} · زاد «غير معروف»=${unknownGrew}`);
+}
+
 function renderResults() {
   muted(() => {
     const tbody = document.querySelector('#results tbody');
@@ -413,7 +650,11 @@ function renderCounters() {
   muted(() => {
     const c = DCT.counters;
     const rows = [
-      ['طلبات المحرّك', c.requests], ['حقن', c.injections], ['إعادة حقن من الكاش', c.reinjections],
+      ['نداءات المحرّك (دفعات)', c.requests], ['حقن', c.injections], ['إعادة حقن من الكاش', c.reinjections],
+      ['مقاطع أُرسلت', c.segmentsRequested], ['مقاطع من الكاش (صفر كلفة)', c.segmentHits],
+      ['فشل محاذاة (رُميت الدفعة)', c.alignmentFailures], ['دفعات فاشلة', c.failedBatches],
+      ['مُخطَّى: حيّ/زائل', c.volatileSkipped], ['انتظار استقرار', c.settleDeferrals],
+      ['توكنات (دخل/خرج)', c.usageCalls ? (c.tokensIn + '/' + c.tokensOut + ' · كاش ' + c.cacheReadTokens) : (c.usageUnknown ? 'غير معروف' : '—')],
       ['استسلام (حلقة)', c.giveUps], ['نتائج متأخرة مُهمَلة', c.droppedLate],
       ['وميض إنجليزي', Math.round(c.flickerMs) + ' ms'], ['مخالفات شبكة', c.network],
       ['حلقة مشتبهة', DCT.loopFlag ? 'نعم — أُوقفت الطبقة' : 'لا'],
@@ -439,13 +680,21 @@ function scheduleCounters() {
 
 function resetQuiet() {
   restoreAll();
-  // Each check starts from an EMPTY cache: a key warmed by an earlier check turns a
+  // Each check starts from EMPTY caches: a key warmed by an earlier check turns a
   // "the engine is called" check into a cache hit, and the check then measures nothing
   // (measured: check 3 reported 0 dropped late results because b2t was already cached).
-  DCT.cache.clear();
-  DCT.counters.requests = 0; DCT.counters.injections = 0; DCT.counters.reinjections = 0;
-  DCT.counters.giveUps = 0; DCT.counters.droppedLate = 0; DCT.counters.flickerMs = 0;
-  DCT.counters.englishSince.clear(); DCT.held.clear();
+  // Since 0.6 part two there are TWO caches, and leaving the segment cache warm would turn
+  // the batch checks into cache hits in exactly the same way.
+  DCT.clearCache();
+  const c = DCT.counters;
+  c.requests = 0; c.injections = 0; c.reinjections = 0; c.giveUps = 0; c.droppedLate = 0;
+  c.flickerMs = 0; c.batchCalls = 0; c.segmentsRequested = 0; c.segmentHits = 0; c.blocks = 0;
+  c.failedBatches = 0; c.alignmentFailures = 0; c.volatileSkipped = 0; c.settleDeferrals = 0;
+  c.usageCalls = 0; c.usageUnknown = 0; c.tokensIn = 0; c.tokensOut = 0; c.cacheReadTokens = 0; c.cacheWriteTokens = 0;
+  c.lastCallMs = 0; c.lastUsage = null;
+  c.englishSince.clear();
+  INTERNALS.deferrals.clear(); INTERNALS.volatile.clear(); INTERNALS.volatileNoted.clear();
+  INTERNALS.lastWrite.clear(); INTERNALS.writes.clear(); INTERNALS.lastValue.clear();
   DCT.loopFlag = false; DCT.rate = []; DCT.enabled = true;
   muted(() => { document.getElementById('log').textContent = '' });
   rescan();                                  // fixtures may be new since the last scan
@@ -469,6 +718,10 @@ async function runAll() {
   await check3_lateResult();
   await check4_zeroNetworkAndIgnoreRoot();
   await check5_guards();
+  await check6_alignmentDropsBatch();
+  await check7_segmentCache();
+  await check8_volatility();
+  await check9_costCounter();
   const failed = RESULTS.filter((r) => !r.ok).length;
   muted(() => { document.getElementById('spState').textContent = failed === 0 ? 'كل الفحوص نجحت' : (failed + ' فشل') });
   log('== ' + (RESULTS.length - failed) + '/' + RESULTS.length + ' PASS ==');
@@ -507,7 +760,7 @@ document.getElementById('reset').addEventListener('click', () => { resetQuiet();
 
 buildLog(40);
 renderCounters();
-log('جاهز. اضغط «تشغيل الفحوص الأربعة».');
+log('جاهز. اضغط «تشغيل الفحوص الثمانية».');
 
 /* headless gate: `?auto=1` runs everything on load and writes a verdict a CI step can
    grep — the same page, no test framework, no browser driver beyond a headless run. */
@@ -522,7 +775,9 @@ if (new URLSearchParams(location.search).has('auto')) {
       failures: RESULTS.filter((r) => !r.ok).map((r) => r.name),
       counters: { requests: c.requests, injections: c.injections, reinjections: c.reinjections,
                   giveUps: c.giveUps, droppedLate: c.droppedLate,
-                  flickerMs: Math.round(c.flickerMs), network: c.network }
+                  flickerMs: Math.round(c.flickerMs), network: c.network,
+                  batchCalls: c.batchCalls, segmentsRequested: c.segmentsRequested, segmentHits: c.segmentHits,
+                  alignmentFailures: c.alignmentFailures, volatileSkipped: c.volatileSkipped }
     };
     const pre = document.createElement('pre');
     pre.id = 'verdict';

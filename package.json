@@ -1,9 +1,13 @@
 {
   "name": "dsh-translate-this",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "يترجم الردود ومخرجات الأدوات ومعاينات الملفات ولوحات البلاقنات في DSH عند الطلب — بنموذج المستخدم نفسه، بلا خدمة ترجمة خارجية وبلا نموذج محلي. Translate This: on-demand content translation for DeepSeek Harness, replies / tool output / file previews / plugin panels, with your own model.",
   "type": "module",
   "main": "lib/index.js",
+  "scripts": {
+    "acceptance": "node acceptance/run.mjs",
+    "protocol": "node acceptance/protocol.mjs"
+  },
   "exports": {
     ".": {
       "default": "./lib/index.js"
