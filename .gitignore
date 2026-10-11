@@ -10,6 +10,10 @@ HANDOFF.md
 # local audit trail (incidents, measurements, environment facts) — owner keeps it out of the repo
 audit.md
 
+# an EXTERNAL evaluation handed to us by the owner ("لا يشترط صحة تقييمه"): every claim in it is a
+# hypothesis to be measured, never a fact. Local only — never shipped, never committed.
+plan-to-fix.md
+
 # acceptance screenshots: evidence produced by `node acceptance/run.mjs --shots`, never shipped
 acceptance/shots/
 
