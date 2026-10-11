@@ -24,7 +24,7 @@
  *   node tools/gui-probe.mjs [--url http://127.0.0.1:19387] [--wait 6000]
  *                            [--json tools/gui-probe.json] [--chrome <path>]
  */
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -41,6 +41,10 @@ const URL_ = argOf('url', 'http://127.0.0.1:19387')
 const WAIT = Number(argOf('wait', '6000'))
 const JSON_OUT = argOf('json', null)
 const CHROME = argOf('chrome', defaultChrome())
+const EXPR_FILE = argOf('expr', null)   // run a script of your own instead of the built-in report
+
+/** Never print a launch token, even when the caller pastes one in the URL. */
+const mask = (s) => String(s ?? '').replace(/([?&]token=)[^&]*/g, '$1***')
 
 /**
  * Candidate selectors. Two lessons are baked in here, both measured:
@@ -109,9 +113,12 @@ try {
   await api.send('Runtime.enable')
   await api.send('Log.enable')
   await sleep(WAIT)                                  // let the SPA mount and the session load
-  const res = await api.evaluate(EXPR)
+  const script = EXPR_FILE ? await readFile(EXPR_FILE, 'utf8') : EXPR
+  const res = await api.evaluate(script)
   if (res.error) throw new Error('evaluate failed: ' + res.error)
-  const report = JSON.parse(res.value)
+  let report
+  try { report = JSON.parse(res.value) } catch { report = { raw: res.value } }
+  if (report.href) report.href = mask(report.href)
   report.errors = pageErrors(api)
   ws.close()
 
@@ -120,23 +127,30 @@ try {
     await writeFile(JSON_OUT, JSON.stringify(report, null, 2))
   }
 
-  console.log(`GUI: ${report.href}`)
-  console.log(`title: ${report.title} · elements: ${report.elements} · arabic: ${report.hasArabic}`)
-  console.log(`header button «ترجم هذا المحتوى»: ${report.buttonText}`)
-  if (report.plugin) {
-    console.log(`plugin: v${report.plugin.version} · engine=${report.plugin.engine} · loopFlag=${report.plugin.loopFlag}`)
-    console.log('declared surfaces (the layer\'s own probe):')
-    for (const [id, s] of Object.entries(report.plugin.surfaces)) {
-      console.log(`   ${id.padEnd(9)} on=${String(s.on).padEnd(5)} roots=${String(s.roots).padStart(3)}  ${s.selector}`)
-    }
-    console.log(`counters: ${JSON.stringify(report.plugin.counters)}`)
+  // Two report shapes: the built-in census, or whatever a custom `--expr` returned. The
+  // custom branch prints it verbatim — a tool that reformats what it was asked to measure
+  // is a tool that hides half the answer.
+  if (EXPR_FILE) {
+    console.log(JSON.stringify(report, null, 2))
   } else {
-    console.log('plugin: NOT PRESENT in this page (not injected, or the page loaded before it was)')
+    console.log(`GUI: ${mask(report.href)}`)
+    console.log(`title: ${report.title ?? ''} · elements: ${report.elements ?? 0} · arabic: ${report.hasArabic ?? '?'}`)
+    console.log(`header button «ترجم هذا المحتوى»: ${report.buttonText ?? 'unknown'}`)
+    if (report.plugin) {
+      console.log(`plugin: v${report.plugin.version} · engine=${report.plugin.engine} · loopFlag=${report.plugin.loopFlag}`)
+      console.log('declared surfaces (the layer\'s own probe):')
+      for (const [id, s] of Object.entries(report.plugin.surfaces)) {
+        console.log(`   ${id.padEnd(9)} on=${String(s.on).padEnd(5)} roots=${String(s.roots).padStart(3)}  ${s.selector}`)
+      }
+      console.log(`counters: ${JSON.stringify(report.plugin.counters)}`)
+    } else {
+      console.log('plugin: NOT PRESENT in this page (not injected, or the page loaded before it was)')
+    }
+    const hits = Object.entries(report.candidates || {}).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1])
+    console.log('candidate selectors with matches:')
+    for (const [sel, n] of hits) console.log(`   ${String(n).padStart(5)}  ${sel}`)
   }
-  const hits = Object.entries(report.candidates).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1])
-  console.log('candidate selectors with matches:')
-  for (const [sel, n] of hits) console.log(`   ${String(n).padStart(5)}  ${sel}`)
-  if (report.errors.length) console.log('page errors:\n' + report.errors.map((e) => '   ' + e).join('\n'))
+  if (report.errors && report.errors.length) console.log('page errors:\n' + report.errors.map((e) => '   ' + e).join('\n'))
   if (JSON_OUT) console.log(`\nfull report: ${JSON_OUT}`)
 } catch (err) {
   console.error('probe failed: ' + (err && err.message ? err.message : String(err)))

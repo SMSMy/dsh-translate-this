@@ -84,8 +84,9 @@ export function client(ws) {
     },
     /** Evaluate in the page and return the value (or an {error} object, never a throw). */
     async evaluate(expression) {
-      const res = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: false })
+      const res = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
       if (res.exceptionDetails) return { error: res.exceptionDetails.text }
+      if (res.result?.subtype === 'error') return { error: res.result.description || 'evaluation failed' }
       return { value: res.result?.value }
     }
   }
