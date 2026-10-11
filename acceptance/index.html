@@ -1208,6 +1208,39 @@ async function check18_cancelStopsTheHost() {
     `inflight قبل=${inflightBefore} بعده=${inflightAfter} · نداءات=${seen.calls} · signal=${seen.signals[0] ? 'مُمرَّر' : 'مفقود'} · aborted=${aborted} · الطبقة هادئة=${idle} · سطر الفشل=${redLine ? JSON.stringify(redLine) : 'لا شيء'}`);
 }
 
+/**
+ * 19 — the floating panel is dismissed by the user, not only by its own button: a click anywhere
+ * outside it closes it, Escape closes it, a click INSIDE must not, and after the disposer runs
+ * nothing closes any more (a listener that outlives its panel is a leak with a UI costume).
+ * Driven through the shipping helper (`MODULE.closeOnOutside`) with real events, because the
+ * harness has no React to mount the component with.
+ */
+async function check19_outsideClose() {
+  resetQuiet();
+  const host = document.createElement('div');
+  host.id = 'oc-host';
+  host.innerHTML = '<div id="oc-panel" data-dct-ignore><button id="oc-in" type="button">داخل</button></div><div id="oc-out">خارج</div>';
+  document.body.append(host);
+  const panelEl = document.getElementById('oc-panel');
+  const inside = document.getElementById('oc-in');
+  const outside = document.getElementById('oc-out');
+  let closed = 0;
+  const dispose = MODULE.closeOnOutside(panelEl, () => { closed += 1 });
+  inside.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  const afterInside = closed;
+  outside.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  const afterOutside = closed;
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  const afterEscape = closed;
+  dispose();
+  outside.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  const afterDispose = closed;
+  host.remove();
+  record('19 · النافذة العائمة تُغلق بضغطة خارجها وبـEscape، ولا تُغلق بضغطة داخلها',
+    afterInside === 0 && afterOutside === 1 && afterEscape === 2 && afterDispose === 2,
+    `ضغطة داخل=${afterInside} (يجب 0) · ضغطة خارج=${afterOutside} (يجب 1) · Escape=${afterEscape} (يجب 2) · بعد التفكيك=${afterDispose} (يجب 2)`);
+}
+
 function renderResults() {
   muted(() => {
     const tbody = document.querySelector('#results tbody');
@@ -1315,6 +1348,7 @@ async function runAll() {
   await check15_registry();              // last: it builds and disposes a second layer
   await check17_teardown();              // and these two mount/dispose real wiring as well
   await check18_cancelStopsTheHost();
+  await check19_outsideClose();
   const failed = RESULTS.filter((r) => !r.ok).length;
   muted(() => { document.getElementById('spState').textContent = failed === 0 ? 'كل الفحوص نجحت' : (failed + ' فشل') });
   log('== ' + (RESULTS.length - failed) + '/' + RESULTS.length + ' PASS ==');

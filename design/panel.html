@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<!--
+  design/panel.html — نموذج تصميمي مستقلّ لنافذة «ترجمة المحتوى» (Translate This).
+
+  كيف تستعمله:
+    • افتحه في المتصفح مباشرة (لا خادم ولا بناء).
+    • عدّل الـCSS والبنية كما تشاء. التعليقات <!-- data: … --> تسمّي الحقل الحقيقي الذي سيربط به.
+    • مبدّل الحالات في الأعلى (خامل · يعمل · نجح · فشل) يعرض ما سيبدو عليه كل حال.
+    • الإغلاق بالنقر خارج البطاقة وبـEscape يعملان هنا فعلاً (كما سيُطبَّق في البلاقن).
+
+  ما أعيده أنا بعد تعديلك:
+    • مكوّن React واحد بنفس الفئات (dct-*) داخل lib/client.js.
+    • مع الحفاظ على الحُرّاس: أرقام progress الحيّة · سطر الفشل · صفوف الأسطح بعدد الجذور · زرّ ترجم/استرجاع.
+    • الفئات الحالية التي لا يجوز تغيير أسمائها إن أردت نقلًا ميكانيكيًّا:
+      dct-panel · dct-embedded · dct-btn · dct-icon · dct-mini · dct-wide · dct-spin · dct-select
+      dct-title · dct-sec · dct-row · dct-kv · dct-note · dct-warn · dct-bad · dct-actions · dct-glyph
+-->
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Translate This — نموذج اللوحة</title>
+<style>
+  /* ============ سمة الصفحة (تُحاكي سمة DSH: فاتح/داكن تلقائيًّا) ============ */
+  :root { color-scheme: light dark; --dsh-border: rgba(128,128,128,.35); }
+  body { margin: 0; min-height: 100vh; background: light-dark(#f6f6f7, #101013); color: light-dark(#111, #e8e8ea);
+         font: 14px/1.7 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  .stage { padding: 24px; }
+  .hint { opacity: .7; font-size: 12px; max-width: 620px; }
+  .switcher { display: flex; gap: 6px; flex-wrap: wrap; margin: 14px 0 22px; }
+
+  /* ============ اللوحة نفسها ============ */
+  /* الحجم الحالي: width: min(420px, 92vw) · max-height: 70vh — غيّره بحرية، وأخبرني بالمقاس الذي تختاره */
+  .dct-panel { position: fixed; inset-block-start: 56px; inset-inline-end: 16px; z-index: 999998;
+    width: min(420px, 92vw); max-height: 70vh; overflow: auto; padding: 12px 14px;
+    background: light-dark(#fff, #1b1b1f); color: light-dark(#111, #e8e8ea);
+    border: 1px solid var(--dsh-border); border-radius: 12px; box-shadow: 0 10px 30px #0006;
+    font: 13px/1.7 -apple-system, "Segoe UI", system-ui, sans-serif; text-align: start; }
+  /* النسخة المضمّنة في مقعد main: بلا ظل ولا حدود وتملأ المقعد */
+  .dct-panel.dct-embedded { position: static; inset: auto; width: auto; max-height: none;
+    box-shadow: none; border: 0; border-radius: 0; background: transparent; }
+
+  /* ---------- L1: الشريط الأساسي (ثابت دائمًا) ---------- */
+  .dct-bar { display: flex; gap: 8px; align-items: center; }
+  .dct-bar .dct-btn { height: 32px; }                 /* الزرّ الأساسي أكبر قليلًا من 28px ليكون هدفًا واضحًا */
+  .dct-primary { flex: 1; justify-content: center; font-size: 13px; }
+  .dct-lang { display: inline-flex; align-items: center; gap: 6px; }
+  .dct-lang label { font-size: 11px; opacity: .7; }   /* التسمية صغيرة: القيمة هي المهمّة */
+
+  /* ---------- L2: سطر الحالة (سطر واحد لا أكثر) ---------- */
+  .dct-status { display: flex; align-items: center; gap: 8px; margin-top: 10px; min-height: 22px; }
+  .dct-status .grow { flex: 1; }
+
+  /* ---------- L3: التفاصيل (مطويّة افتراضيًّا) ---------- */
+  .dct-more { margin-top: 10px; border-top: 1px solid rgba(128,128,128,.25); }
+  .dct-more > summary { cursor: pointer; padding: 8px 0 0; font-size: 12px; opacity: .85; list-style: none; }
+  .dct-more > summary::-webkit-details-marker { display: none; }
+  .dct-more > summary::before { content: "▸ "; }
+  .dct-more[open] > summary::before { content: "▾ "; }
+
+  /* ---------- عناصر عامة (أسماؤها من البلاقن كما هي اليوم) ---------- */
+  .dct-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
+    border: 1px solid var(--dsh-border); border-radius: 8px; background: transparent; color: inherit;
+    font: inherit; font-size: 12px; cursor: pointer; }
+  .dct-btn:hover { background: rgba(128,128,128,.14); }
+  .dct-btn[data-on] { background: rgba(64,120,220,.18); border-color: rgba(64,120,220,.5); }
+  .dct-btn.dct-mini { height: 22px; padding: 0 8px; font-size: 11px; }
+  .dct-btn.dct-icon { width: 28px; padding: 0; justify-content: center; }
+  .dct-glyph { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; }
+  .dct-title { font-weight: 600; margin: 0 0 6px; }
+  .dct-sec { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(128,128,128,.25); }
+  .dct-kv { display: flex; justify-content: space-between; gap: 12px; }
+  .dct-kv b { font-weight: 600; }
+  .dct-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 2px 0; }
+  .dct-note { opacity: .75; font-size: 12px; }
+  .dct-warn { color: #d08a2a; }
+  .dct-bad { color: #d05555; font-weight: 600; }
+  .dct-select { background: transparent; color: inherit; border: 1px solid var(--dsh-border);
+    border-radius: 8px; padding: 2px 6px; font: inherit; font-size: 12px; }
+  .dct-spin { display: inline-block; width: 13px; height: 13px; border: 2px solid currentColor;
+    border-top-color: transparent; border-radius: 50%; animation: dct-rot .8s linear infinite; }
+  @keyframes dct-rot { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .dct-spin { animation-duration: 2s; } }
+
+  /* حالات المبدّل: تُخفي ما لا يخصّ الحالة الحالية */
+  .state-idle   .only-working, .state-idle   .only-done, .state-idle   .only-fail { display: none; }
+  .state-working .only-idle,  .state-working .only-done, .state-working .only-fail { display: none; }
+  .state-done   .only-idle,   .state-done   .only-working, .state-done .only-fail { display: none; }
+  .state-fail   .only-idle,   .state-fail   .only-working, .state-fail .only-done { display: none; }
+</style>
+</head>
+<body class="stage">
+
+<h1 class="dct-title">نموذج نافذة «ترجمة المحتوى» — عدّله كما تحبّ</h1>
+<p class="hint">
+  كل عنصر أدناه يقابل عنصرًا حقيقيًّا في البلاقن. المبدّل يغيّر الحالة (خامل/يعمل/نجح/فشل)،
+  والنقر خارج البطاقة أو <kbd>Escape</kbd> يغلقها فعلاً — أعد فتحها بالزرّ.
+</p>
+
+<div class="switcher">
+  <button class="dct-btn" onclick="openPanel(); setState('idle')">افتح اللوحة</button>
+  <button class="dct-btn" onclick="setState('idle')">خامل</button>
+  <button class="dct-btn" onclick="setState('working')">يعمل</button>
+  <button class="dct-btn" onclick="setState('done')">نجح</button>
+  <button class="dct-btn" onclick="setState('fail')">فشل</button>
+</div>
+
+<!-- ======================= البطاقة ======================= -->
+<div class="dct-panel" id="panel" hidden aria-label="ترجمة المحتوى">
+  <div class="dct-title">ترجمة المحتوى — Translate This</div>
+  <div class="dct-note"><!-- data: engine.label -->نموذج DSH — deepseek-flash</div>
+
+  <!-- ---------- L1 ---------- -->
+  <div class="dct-bar" style="margin-top:10px">
+    <!-- data: action = layer.translateRoots() / layer.restoreAll() حسب layer.translated -->
+    <button class="dct-btn dct-primary" id="primary">
+      <span class="dct-glyph">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="2.5" y="3" width="11" height="10" rx="2"/><path d="M6 6.4h4.6M8.3 5.2v2.4M5.6 9.2l5 3.4M10.6 9.2l-5 3.4"/>
+          <rect x="10.5" y="11" width="11" height="10" rx="2"/><path d="M13.4 18.6l2.6-5.4 2.6 5.4M14.4 16.7h3.2"/>
+        </svg>
+      </span>
+      <!-- النصّ يتبدّل: «ترجم هذا المحتوى» ⇄ «استرجاع الأصل» ⇄ «جارٍ الترجمة…» -->
+      <span class="only-idle only-done">ترجم هذا المحتوى</span>
+      <span class="only-working">جارٍ الترجمة… <span class="dct-spin"></span></span>
+    </button>
+
+    <!-- data: layer.target (ar · en · fr · zh · tr) — أبرِزها كما تشاء، واقترح إن أردت قائمة أوسع -->
+    <span class="dct-lang">
+      <label for="lang">إلى</label>
+      <select class="dct-select" id="lang">
+        <option>العربية</option><option>English</option><option>Français</option><option>中文</option><option>Türkçe</option>
+      </select>
+    </span>
+  </div>
+
+  <!-- ---------- L2: سطر واحد ---------- -->
+  <div class="dct-status">
+    <span class="dct-note only-idle">جاهز — لا عمل جارٍ.</span>
+    <!-- data: progress.inflight · progress.queued · progress.attrsQueued -->
+    <span class="dct-note dct-warn only-working"><span class="dct-spin" style="margin-inline-end:6px"></span>جارٍ: 2 · في الطابور 5 · سمات 3</span>
+    <!-- data: counters.requests · counters.injections · counters.tokensIn/out -->
+    <span class="dct-note only-done">تمّ: 4 نداءات · 12 حقنة · توكنات 198/59</span>
+    <!-- data: layer.debug (فارغ = لا سطر) -->
+    <span class="dct-bad only-fail grow">فشل المحرّك (RATE_LIMIT): تجاوزت الحدّ — أعد المحاولة</span>
+  </div>
+
+  <!-- ---------- L3: التفاصيل ---------- -->
+  <details class="dct-more">
+    <summary>التفاصيل والعدّادات</summary>
+
+    <!-- data: counters.* (14 صفًّا اليوم ⇒ صمّمها كما تراها: شبكة؟ سطران؟ جداول؟) -->
+    <div class="dct-sec">
+      <div class="dct-kv"><span>نداءات المحرّك</span><b>4</b></div>
+      <div class="dct-kv"><span>مقاطع أُرسلت / من الكاش</span><b>9 / 6</b></div>
+      <div class="dct-kv"><span>توكنات الدخل / الخرج</span><b>198 / 59</b></div>
+      <div class="dct-kv"><span>كلفة آخر نداء</span><b>1598 ms</b></div>
+      <div class="dct-kv"><span>فشل محاذاة / دفعات فاشلة</span><b>0 / 0</b></div>
+      <div class="dct-kv"><span>حقن نصّي / سمات</span><b>3 / 17</b></div>
+      <div class="dct-kv"><span>استسلام / نتائج متأخّرة</span><b>0 / 0</b></div>
+      <div class="dct-kv"><span>وميض إنجليزي</span><b>9 ms</b></div>
+    </div>
+
+    <!-- data: layer.state[id] {label, owner, trust, on, roots, attrTargets}
+         الحارس: عدد الجذور لكل سطح يجب أن يبقى مقروءًا (الاختبار اليدوي يعتمد عليه) -->
+    <div class="dct-sec">
+      <div class="dct-kv"><span>سجلّ الأسطح</span><b>41 سطحًا · 2 مُفعَّل · 7 مستهدفات</b></div>
+      <div class="dct-row"><label><input type="checkbox" checked> كتل الردود</label><span><b>1</b> <button class="dct-btn dct-mini">ترجم</button></span></div>
+      <div class="dct-row"><label><input type="checkbox"> لوحة طرف ثالث</label><span><b>12 + 17 سمات</b> <button class="dct-btn dct-mini">ترجم</button></span></div>
+      <div class="dct-note">و22 سطحًا آخر بلا جذر في هذه اللحظة (عدد مقيس، لا أسماء مخفيّة).</div>
+    </div>
+
+    <!-- data: fetch('/dsh-translate-this/log?limit=6') — ميتاداتا فقط، عند الطلب -->
+    <div class="dct-sec">
+      <div class="dct-row"><span>سجلّ نداءات المضيف (ميتاداتا)</span><button class="dct-btn dct-mini">اقرأ</button></div>
+      <div class="dct-note">إجمالي: 1 نداء · 1 مقطع · 169 حرفًا · توكنات 198/59 · فشل 0</div>
+      <div class="dct-note">1. single · 1 مقطع · 169 حرفًا · 1598ms · نجح · توكنات 198/59 · stop</div>
+    </div>
+
+    <!-- أدوات نادرة: مكانها هنا لا في الواجهة الأمامية -->
+    <div class="dct-sec" style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="dct-btn dct-mini">إلغاء</button>
+      <button class="dct-btn dct-mini">تفريغ الكاش</button>
+      <button class="dct-btn dct-mini">إغلاق</button>
+    </div>
+
+    <!-- سطران تقنيان للنسخ في تقرير عطل (أبقِهما صغيرين أو انقلهما إلى «تشخيص») -->
+    <div class="dct-note" style="user-select:all">probe: part:data-conversation-content(slot)=1 · part:data-tool(tool)=12 <span class="dct-note">/m2</span></div>
+    <div class="dct-note" style="user-select:all">dom: [data-slot] 41 · [data-tool] 5 · [data-document-preview] 0</div>
+  </details>
+</div>
+
+<script>
+  const panel = document.getElementById('panel');
+  const openPanel = () => { panel.hidden = false };
+  const closePanel = () => { panel.hidden = true };
+  // السلوك المطلوب: إغلاق بضغطة خارج البطاقة وبـEscape — وهو ما سيُطبَّق في البلاقن (الفحص 19)
+  document.addEventListener('mousedown', (e) => { if (!panel.hidden && !panel.contains(e.target) && e.target.id !== 'primary') closePanel() }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePanel() }, true);
+  function setState (s) { panel.className = 'dct-panel state-' + s; panel.hidden = false }
+  setState('working');
+</script>
+</body>
+</html>
