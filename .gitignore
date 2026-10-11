@@ -13,3 +13,6 @@ acceptance/shots/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# gui probe output (environment-specific snapshot of the live UI)
+tools/gui-probe.json
