@@ -132,6 +132,42 @@ for (const broken of BROKEN) {
 check('7 · خمس طرق لكسر المحاذاة كلها تُرفض بـALIGNMENT_FAILED وتسمّي السبب',
   refused === BROKEN.length, refusals.join(' | '))
 
+/* ------------------------------------------------------------------- atomic tokens --- */
+const { maskTokens, unmaskTokens } = client
+const TOKEN_SAMPLES = [
+  'Run `node acceptance/run.mjs` before you commit, then see README.md for v1.2.3 and npx @deepseek-ai/dsh web.',
+  'Open https://example.com/path?a=1.2 and call ctx.llm.stream with the --verbose flag to see {placeholders}.',
+  'Commit 4f2a9c1e touched lib/client.js and package.json in one go.',
+  'Nothing atomic here, just a plain sentence about sessions and caches.'
+]
+let tokensRoundTrip = true
+let maskedClean = true
+const roundDetail = []
+for (const sample of TOKEN_SAMPLES) {
+  const masked = maskTokens(sample)
+  const back = unmaskTokens(masked.text, masked.tokens)
+  if (back.text !== sample || back.missing.length || back.leaked) { tokensRoundTrip = false; roundDetail.push('ROUNDTRIP: ' + JSON.stringify(sample.slice(0, 40))) }
+  // after masking, no code span, URL or file name may remain in the text the model sees
+  if (/https?:\/\/|`|@[a-z0-9-]+\/|\.mjs\b|\.json\b/.test(masked.text)) { maskedClean = false; roundDetail.push('LEFTOVER: ' + masked.text.slice(0, 60)) }
+}
+check('13 · الرموز الذرّية: تُقنَّع ثم تُعاد حرفيًّا، ولا يبقى كود في النصّ المُرسَل',
+  tokensRoundTrip && maskedClean, roundDetail.length ? roundDetail.join(' | ') : TOKEN_SAMPLES.length + ' أنماط · مثال: ' + maskTokens(TOKEN_SAMPLES[0]).text)
+
+// §6.1: tokens do NOT enter the cache key — the same sentence with a different URL is one segment.
+const a = 'Read https://example.com/one for details about the session.'
+const b = 'Read https://example.com/two for details about the session.'
+const sameMasked = maskTokens(a).text === maskTokens(b).text
+check('14 · تغيّر الرابط وحده ⇒ النصّ المقنَّع واحد (فالرموز لا تدخل مفتاح الكاش)',
+  sameMasked, maskTokens(a).text)
+
+// A reply that lost a marker must be REFUSED, not shown: this is the 100% integrity gate.
+const maskedSample = maskTokens(TOKEN_SAMPLES[1])
+const lost = unmaskTokens(maskedSample.text.replace('<<<K1>>>', ''), maskedSample.tokens)
+const mangled = unmaskTokens(maskedSample.text.replace('<<<K1>>>', '<<< K1 >>>'), maskedSample.tokens)
+check('15 · ردّ فقد رمزًا محميًّا أو شوّه علامته ⇒ يُرفض (لا حقن ولا تخزين)',
+  lost.missing.length === 1 && (mangled.missing.length === 1 || mangled.leaked === true),
+  'مفقود=' + JSON.stringify(lost.missing) + ' · مشوّه: مفقود=' + JSON.stringify(mangled.missing) + ' مشوَّه=' + mangled.leaked)
+
 /* ---------------------------------------------------------------------------- ceilings --- */
 const tokens = [0, 100, 1000, 3000, 20000].map((n) => maxTokensFor(n))
 check('12 · سقف الخرج يتزايد مع الدخل ومقيَّد [512, 4096]',

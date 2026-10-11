@@ -159,6 +159,9 @@ async function translateBatch(texts) {
   for (const t of texts) out.push(await translate(t));
   if (ENGINE.mode === 'short') out.pop();
   ENGINE.calls -= texts.length - 1;          // one call, not N: the counter must mean calls
+  // `mode: 'dropToken'` models the failure the integrity gate exists for: the model answered
+  // but lost a masked path or command. The layer must refuse it, not show it.
+  const segments = ENGINE.mode === 'dropToken' ? out.map((s) => s.replace(/<<<K\d+>>>/g, '')) : out;
   // The usage shape a LIVE host reported (measured on the 3099 test host):
   // `inputTokens` · `outputTokens` · `cacheReadTokens` · `cacheWriteTokens` — and the counts are
   // DISJOINT, so the billed input is their sum. `ENGINE.usage = false` models a model that
@@ -167,7 +170,7 @@ async function translateBatch(texts) {
     inputTokens: 10 * texts.length, outputTokens: 20 * texts.length,
     cacheReadTokens: 3 * texts.length, cacheWriteTokens: texts.length, totalTokens: 0
   };
-  return { segments: out, usage };
+  return { segments, usage };
 }
 
 /* ------------------------------------------------- the layer (single source) ----
@@ -234,7 +237,10 @@ const DCT = layer ? {
   get enabled() { return INTERNALS.enabled }, set enabled(v) { INTERNALS.enabled = v },
   get loopFlag() { return INTERNALS.loopFlag }, set loopFlag(v) { INTERNALS.loopFlag = v },
   translateAll: () => layer.translateRoots(),
+  translate: (ids) => layer.translateRoots(ids),
+  translated: (id) => (id ? layer.translatedIn(id) : layer.translated),
   restoreAll: () => layer.restoreAll(),
+  restoreSurface: (id) => layer.restoreSurface(id),
   clearCache: () => layer.clearCache(),
   rescan: () => layer.scanRoots(),
 } : EMPTY;
@@ -482,9 +488,20 @@ async function check6_alignmentDropsBatch() {
   const text = document.getElementById('b2t').textContent;
   const stillEnglish = /will come back broken/.test(text);
   const storedSegments = DCT.segments.size;
-  record('6 · فشل المحاذاة: تُرمى الدفعة كاملة — لا كاش مقطع ولا كاش كتلة ولا حقن جزئي',
-    stillEnglish && storedSegments === 0 && DCT.counters.alignmentFailures >= 2 && DCT.cache.size === 0 && !!DCT.debug,
-    `بقي إنجليزيًّا=${stillEnglish} · مقاطع مخزّنة=${storedSegments} · نداءات=${DCT.counters.requests - beforeCalls} · فشل محاذاة=${DCT.counters.alignmentFailures} · كاش الكتل=${DCT.cache.size} · سطر أحمر=${!!DCT.debug}`);
+  const cacheBefore = DCT.cache.size;
+  const debugBefore = DCT.debug;
+  // …and the red line must not OUTLIVE the failure it describes. The owner's report:
+  // «فشل المحرّك: EMPTY_REPLY» stayed on screen while translation worked fine — a stale error
+  // tells him something is broken when it is not, which is the one thing a status line must
+  // never do. A successful injection clears it.
+  document.getElementById('translateAll').click();
+  await wait(500);
+  const recoveredArabic = /[\u0600-\u06FF]/.test(document.getElementById('b2t').textContent);
+  const debugAfter = DCT.debug;
+  record('6 · فشل المحاذاة: تُرمى الدفعة كاملة — ولا يبقى سطر الفشل بعد نجاح لاحق',
+    stillEnglish && storedSegments === 0 && DCT.counters.alignmentFailures >= 2 && cacheBefore === 0 &&
+    !!debugBefore && recoveredArabic && debugAfter === null,
+    `بقي إنجليزيًّا=${stillEnglish} · مقاطع مخزّنة=${storedSegments} · كاش الكتل قبل النجاح=${cacheBefore} · نداءات=${DCT.counters.requests - beforeCalls} · فشل محاذاة=${DCT.counters.alignmentFailures} · سطر أحمر أثناء الفشل=${!!debugBefore} · نُجحت الترجمة بعدها=${recoveredArabic} · السطر بعد النجاح=${debugAfter === null ? 'زال' : JSON.stringify(debugAfter)}`);
 }
 
 /**
@@ -591,6 +608,77 @@ async function check8_volatility() {
   stage.remove();
 }
 
+/**
+ * The button's state is PER SURFACE and per what is VISIBLE — the owner's report, in his words:
+ * «زر الترجمه في نافذة الاعدات يترجم التبويبة الحالية وهذا ممتاز، ولكن عند النزول الى التبويبة
+ * الاخرى يبقى الزر مفعلا اي "ضغطة لاسترجاع الاصل"، كذلك الزر يكون مفعلا عند الدخول للإعدادت
+ * لأول مره». The cause was `records.size > 0`: a GLOBAL answer to a per-surface question.
+ */
+async function check10_surfaceState() {
+  resetQuiet();
+  const stage = document.createElement('div');
+  stage.setAttribute('data-test-stage', '');            // this page's `settings` surface
+  const pane = document.createElement('span');
+  pane.textContent = 'A settings pane with enough words to be translated on its own.';
+  stage.append(pane);
+  document.getElementById('left').append(stage);
+  for (const id of ['b1t', 'b3t']) { const el = document.getElementById(id); if (el) el.textContent = ''; }
+  document.getElementById('login').textContent = '';
+  paint('b2t', 'A reply block translated on its own surface. And a second sentence right here.', 'value');
+  rescan();
+  await wait(600);
+  DCT.translate(['replies']);                           // the conversation only
+  await wait(400);
+  const repliesOn = DCT.translated('replies');
+  const settingsOff = DCT.translated('settings') === false;
+  DCT.translate(['settings']);                          // now the settings pane
+  await wait(400);
+  const settingsOn = DCT.translated('settings');
+  stage.style.display = 'none';                         // the other tab: text still in the DOM, not on screen
+  await wait(40);
+  const hiddenOff = DCT.translated('settings') === false;
+  stage.style.display = '';
+  await wait(40);
+  const backOn = DCT.translated('settings');
+  const restored = DCT.restoreSurface('settings');
+  await wait(40);
+  const afterRestoreOff = DCT.translated('settings') === false;
+  record('10 · حالة الزرّ لكل سطح ولكل ما هو ظاهر (لا حالة عامّة)',
+    repliesOn && settingsOff && settingsOn && hiddenOff && backOn && afterRestoreOff && restored > 0,
+    `الردود مترجمة=${repliesOn} · الإعدادات قبل ترجمتها=مطفأة=${settingsOff} · بعد ترجمتها=${settingsOn} · تبويب مخفيّ ⇒ مطفأة=${hiddenOff} · عادت ظاهرة ⇒ مفعّلة=${backOn} · استرجاع السطح=${restored} عقدة ⇒ مطفأة=${afterRestoreOff}`);
+  stage.remove();
+}
+
+/**
+ * §6.1/هـ3 at the layer's end: a reply that LOST a masked path or command is refused — not
+ * shown, not cached, and the segment it came in is evicted so a later attempt re-requests it
+ * instead of replaying the same broken value forever.
+ */
+async function check11_integrityGate() {
+  resetQuiet();
+  onlyFixture('Read https://example.com/one for the details of the session, then continue.');
+  await wait(600);
+  const before = DCT.counters.integrityFailures;
+  ENGINE.mode = 'dropToken';                        // the model answered, but ate the marker
+  document.getElementById('translateAll').click();
+  await wait(400);
+  const text = document.getElementById('b2t').textContent;
+  const stillEnglish = text.includes('https://example.com/one');       // the source, verbatim
+  const noGarbage = !/<<<|K1/.test(text);
+  const failed = DCT.counters.integrityFailures > before;
+  const storedSegments = DCT.segments.size;
+  const storedBlocks = DCT.cache.size;
+  const nothingStored = storedSegments === 0 && storedBlocks === 0;
+  ENGINE.mode = 'ok';
+  // …and the retry path stays open: the same click with a healthy engine must now work.
+  document.getElementById('translateAll').click();
+  await wait(400);
+  const recovered = /[\u0600-\u06FF]/.test(document.getElementById('b2t').textContent);
+  record('11 · حماية الرموز الذرّية: ردّ فقد علامة محميّة ⇒ لا حقن ولا تخزين، والمقطع يُطرد ليُعاد طلبه',
+    stillEnglish && noGarbage && failed && nothingStored && recovered,
+    `بقي النصّ الأصلي=${stillEnglish} · لا نفايات=${noGarbage} · فشل سلامة=${DCT.counters.integrityFailures - before} · بعد الفشل: مقاطع=${storedSegments} كاش=${storedBlocks} · نجحت إعادة المحاولة=${recovered}`);
+}
+
 /* --------------------------------------------------------------------- reporting -- */
 /**
  * The cost counter reads the fields the STREAM carries and sums them the way the type
@@ -695,6 +783,7 @@ function resetQuiet() {
   c.englishSince.clear();
   INTERNALS.deferrals.clear(); INTERNALS.volatile.clear(); INTERNALS.volatileNoted.clear();
   INTERNALS.lastWrite.clear(); INTERNALS.writes.clear(); INTERNALS.lastValue.clear();
+  INTERNALS.debug = null;                    // the red line is state too: each check starts clean
   DCT.loopFlag = false; DCT.rate = []; DCT.enabled = true;
   muted(() => { document.getElementById('log').textContent = '' });
   rescan();                                  // fixtures may be new since the last scan
@@ -722,6 +811,8 @@ async function runAll() {
   await check7_segmentCache();
   await check8_volatility();
   await check9_costCounter();
+  await check10_surfaceState();
+  await check11_integrityGate();
   const failed = RESULTS.filter((r) => !r.ok).length;
   muted(() => { document.getElementById('spState').textContent = failed === 0 ? 'كل الفحوص نجحت' : (failed + ' فشل') });
   log('== ' + (RESULTS.length - failed) + '/' + RESULTS.length + ' PASS ==');

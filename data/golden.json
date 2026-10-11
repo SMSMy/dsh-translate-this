@@ -1,0 +1,20 @@
+{
+  "version": "golden-v1",
+  "src": "en",
+  "tgt": "ar",
+  "about": "The en→ar prose set that 0.7 is accepted on (PLAN.md §8). Each item declares the glossary entry ids it touches; the runner checks the preferred Arabic rendering is present, and computes the atomic-token survival rate from the shipping masker. Numbers, not impressions.",
+  "items": [
+    { "id": "g01", "text": "The session keeps a cache of every segment, so an unchanged sentence costs no token.", "glossary": ["session", "cache", "segment", "token"] },
+    { "id": "g02", "text": "Open the plugin panel to read the tool output of the last job.", "glossary": ["plugin", "plugin panel", "tool output", "job"] },
+    { "id": "g03", "text": "The workspace asks for permission before it writes, and the approval stays in the transcript.", "glossary": ["workspace", "permission", "approval"] },
+    { "id": "g04", "text": "Pick the model and the provider, then set the reasoning effort to off for translation.", "glossary": ["model", "provider", "reasoning", "effort"] },
+    { "id": "g05", "text": "The system prompt tells the model to keep `ctx.llm.stream` and README.md verbatim.", "glossary": ["system prompt"] },
+    { "id": "g06", "text": "Translation happens on demand: the file preview and the plugin panel are only read when you ask.", "glossary": ["file preview", "plugin panel", "on demand"] },
+    { "id": "g07", "text": "A batch of eight segments travels in one call, and an alignment failure throws the whole batch away.", "glossary": ["batch", "segment", "alignment"] },
+    { "id": "g08", "text": "The counter shows metadata only, and there is no silent fallback to another service.", "glossary": ["counter", "metadata", "fallback"] },
+    { "id": "g09", "text": "Inside the sandbox the terminal waits, and the job joins the queue until a slot is free.", "glossary": ["sandbox", "terminal", "job", "queue"] },
+    { "id": "g10", "text": "Write the plan first, then turn it into a goal and a skill the agent can load.", "glossary": ["plan", "goal", "skill", "agent"] },
+    { "id": "g11", "text": "DSH ships as JSON over npm, and the version v0.6.0 stays Latin in Arabic copy.", "glossary": [] },
+    { "id": "g12", "text": "The settings tab has a shortcut, and the default is to enable translation on demand.", "glossary": ["settings", "shortcut", "default", "on demand"] }
+  ]
+}
