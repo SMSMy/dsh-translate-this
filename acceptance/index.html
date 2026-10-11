@@ -1094,11 +1094,18 @@ async function check16_noFrameLeavesWorkQueued() {
   arm.textContent = 'x';
   document.body.append(arm);
   let drained = false;
-  for (let i = 0; i < 40; i += 1) {                  // a measured condition, not a guessed sleep
+  let arabic = false;
+  // Wait for the work to FINISH, not merely for the queue to empty: the drain and the injection
+  // are separated by at least one macrotask (the engine answers on a timer), so sampling the text
+  // the instant the queue empties reads English on some runs — measured 2026-10-11: 1 failure in
+  // 5 runs of `?noraf=1` with `فرغ الطابور=true · النصّ عربي=false · نداءات=1`, i.e. the queue
+  // HAD drained and the call HAD happened, and the check still went red on the sampling order.
+  // Both conditions are still asserted below, so the invariant is not weakened.
+  for (let i = 0; i < 60; i += 1) {                  // a measured condition, not a guessed sleep
     await wait(50);
-    if (INTERNALS.queue.length === 0 && INTERNALS.attrQueue.length === 0) { drained = true; break }
+    if (INTERNALS.queue.length === 0 && INTERNALS.attrQueue.length === 0) drained = true;
+    if (drained && /[\u0600-\u06FF]/.test(document.getElementById('collide').textContent)) { arabic = true; break }
   }
-  const arabic = /[\u0600-\u06FF]/.test(document.getElementById('collide').textContent);
   const calls = ENGINE.calls - before;
   arm.remove();
   stage.remove();
