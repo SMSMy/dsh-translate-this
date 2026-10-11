@@ -1241,6 +1241,36 @@ async function check19_outsideClose() {
     `ضغطة داخل=${afterInside} (يجب 0) · ضغطة خارج=${afterOutside} (يجب 1) · Escape=${afterEscape} (يجب 2) · بعد التفكيك=${afterDispose} (يجب 2)`);
 }
 
+/**
+ * 20 — the page chip (the owner's «زرّ بسيط بالأعلى» for interface plugins): its placement is a
+ * pure function, so it is driven here with synthetic boxes — the corner it picks and the clamping
+ * that keeps a control reachable when the page is scrolled or hugs a viewport edge.
+ */
+async function check20_pageChip() {
+  resetQuiet();
+  const cases = [
+    { rect: { top: 0, right: 800, width: 800, height: 400 }, viewport: { width: 1000, height: 700 }, expect: { top: 8, left: 766 } },
+    { rect: { top: 690, right: 1000, width: 1000, height: 10 }, viewport: { width: 1000, height: 700 }, expect: { top: 666, left: 966 } },
+    { rect: { top: -120, right: 300, width: 300, height: 400 }, viewport: { width: 1000, height: 700 }, expect: { top: 8, left: 266 } }
+  ];
+  const got = cases.map((c) => MODULE.chipPlacement(c.rect, c.viewport));
+  const placed = got.every((g, i) => g && Math.abs(g.top - cases[i].expect.top) < 0.001 && Math.abs(g.left - cases[i].expect.left) < 0.001);
+  const degenerate = MODULE.chipPlacement({ top: 0, right: 10 }, { width: 0, height: 0 }) === null;
+  const host = document.createElement('div');
+  host.setAttribute('data-slot', 'main');
+  host.innerHTML = '<div data-slot="main.conversation"><span>محادثة</span></div><div id="oc-page"><span>صفحة إضافة</span></div>';
+  document.body.append(host);
+  const mains = document.querySelectorAll('[data-slot="main"]').length;
+  const root = MODULE.pageRootOf();
+  const pageOk = mains === 1
+    ? !!(root && root.id === 'oc-page')
+    : (root === null || !root.matches('[data-slot="main.conversation"]'));
+  host.remove();
+  record('20 · زرّ الصفحة الذكيّ: الرُكن المحسوب، والتقييد داخل الشاشة، وجذر الصفحة (لا المحادثة)',
+    placed && degenerate && pageOk,
+    `المواضع=${got.map((g) => (g ? Math.round(g.top) + ',' + Math.round(g.left) : 'null')).join(' | ')} (المتوقّع ${cases.map((c) => c.expect.top + ',' + c.expect.left).join(' | ')}) · صندوق منعدم⇒null=${degenerate} · مراكز main=${mains} · جذر الصفحة=${root ? (root.id || root.getAttribute('data-slot') || root.tagName) : 'null'}`);
+}
+
 function renderResults() {
   muted(() => {
     const tbody = document.querySelector('#results tbody');
@@ -1349,6 +1379,7 @@ async function runAll() {
   await check17_teardown();              // and these two mount/dispose real wiring as well
   await check18_cancelStopsTheHost();
   await check19_outsideClose();
+  await check20_pageChip();
   const failed = RESULTS.filter((r) => !r.ok).length;
   muted(() => { document.getElementById('spState').textContent = failed === 0 ? 'كل الفحوص نجحت' : (failed + ' فشل') });
   log('== ' + (RESULTS.length - failed) + '/' + RESULTS.length + ' PASS ==');
