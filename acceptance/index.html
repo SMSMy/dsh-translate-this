@@ -223,8 +223,9 @@ const EMPTY = {
               batchCalls: 0, segmentsRequested: 0, segmentHits: 0, blocks: 0, failedBatches: 0,
               alignmentFailures: 0, volatileSkipped: 0, settleDeferrals: 0, usageCalls: 0,
               usageUnknown: 0, tokensIn: 0, tokensOut: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-              lastCallMs: 0, lastUsage: null },
-  records: new Map(), cache: new Map(), segments: new Map(), held: new Map(), queue: [], rate: [],
+              lastCallMs: 0, lastUsage: null,
+              attrInjections: 0, attrRestores: 0, attrDropped: 0, attrAttempts: 0 },
+  records: new Map(), cache: new Map(), segments: new Map(), held: new Map(), queue: [], attrQueue: [], rate: [],
   gen: 0, enabled: false, loopFlag: false, debug: null,
 };
 const DCT = layer ? {
@@ -243,6 +244,11 @@ const DCT = layer ? {
   restoreSurface: (id) => layer.restoreSurface(id),
   clearCache: () => layer.clearCache(),
   rescan: () => layer.scanRoots(),
+  /* 0.8: the progress readout and the attribute path, read exactly as the panel reads them —
+     the check measures the same accessors the UI shows, not a parallel computation. */
+  get progress() { return layer.progress },
+  get busy() { return layer.busy },
+  get attrCount() { return layer.attributeCount },
 } : EMPTY;
 
 const restoreAll = () => (layer ? layer.restoreAll() : 0);
@@ -300,6 +306,16 @@ const RESULTS = [];
 const record = (name, ok, detail) => { RESULTS.push({ name, ok, detail }); renderResults(); };
 
 async function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+/* An async injection path that rejects is a SILENT no-op unless somebody listens: the promise
+   is not awaited by the frame pump, so a throw inside `requestAttr` would look exactly like
+   "nothing to do". The harness listens and prints it — a failure that hides is the one failure
+   this project does not accept. */
+const REJECTIONS = [];
+window.addEventListener('unhandledrejection', (e) => {
+  REJECTIONS.push(String((e.reason && (e.reason.message || e.reason.code)) || e.reason));
+  if (REJECTIONS.length > 6) REJECTIONS.shift();
+});
 
 async function check1_streaming() {
   resetQuiet();
@@ -719,6 +735,378 @@ async function check9_costCounter() {
     `دخل=${inDelta} (منها كاش مقروء ${readDelta}) · خرج=${outDelta} · نداءات بإبلاغ=${callsDelta} · بلا إبلاغ بقي الرقم=${unchanged} · زاد «غير معروف»=${unknownGrew}`);
 }
 
+/**
+ * 0.8 — SURFACE KEYS, and the nesting the live GUI actually has.
+ *
+ * Measured on the live GUI: the `tools` rows (73 of them) live INSIDE the `replies` root
+ * (`[data-conversation-content]`), and the document preview lives inside the `panels` root.
+ * So "one key per surface" is not five independent trees — it is five keys over nested roots,
+ * and the innermost declared surface must own the text and the key. This check builds exactly
+ * that shape with its own layer and asserts all three consequences:
+ *   (a) tools OFF + translate replies ⇒ the outer prose becomes Arabic and the nested row
+ *       stays English, with exactly ONE call (the row was never sent);
+ *   (b) tools ON ⇒ the row becomes Arabic and its record says `tools`, not `replies`;
+ *   (c) turning tools OFF restores the row ALONE — the outer prose stays translated.
+ */
+async function check12_surfaceKeys() {
+  const marks = preserveMarks();
+  const host = document.createElement('div');
+  host.innerHTML =
+    '<div class="block" id="nestblock"><span id="nestouter">An outer reply sentence long enough to translate.</span>' +
+    '<div class="logwrap" id="nestwrap"><div class="row"><span id="nestrow">A nested tool row sentence long enough to translate.</span></div></div></div>';
+  document.getElementById('left').append(host);
+  const TABLE = [
+    { id: 'replies', label: 'الكتل', selector: '#nestblock', on: true, trust: 'stable' },
+    { id: 'tools', label: 'السجلّ', selector: '#nestwrap', on: true, trust: 'untrusted' },
+  ];
+  const nest = MODULE.createLayer({ engine: pageEngine, surfaces: TABLE, onChange: () => {} });
+  nest.scanRoots();
+  nest.setSurface('tools', false);                       // the key is OFF: the nested row is not ours
+  await wait(600);
+
+  const before = ENGINE.calls;
+  nest.translateRoots(['replies']);
+  await wait(400);
+  const outerArabic = /[\u0600-\u06FF]/.test(document.getElementById('nestouter').textContent);
+  const rowEnglishWithKeyOff = !/[\u0600-\u06FF]/.test(document.getElementById('nestrow').textContent);
+  const callsWithKeyOff = ENGINE.calls - before;
+
+  nest.setSurface('tools', true);                        // the key is ON: the row follows, and only it
+  await wait(700);
+  const rowArabic = /[\u0600-\u06FF]/.test(document.getElementById('nestrow').textContent);
+  const rowNode = document.getElementById('nestrow').firstChild;
+  const rec = nest._internals.records.get(rowNode);
+  const attributed = !!(rec && rec.surface === 'tools');
+
+  nest.setSurface('tools', false);                       // off again: the row alone goes back
+  await wait(80);
+  const rowBack = !/[\u0600-\u06FF]/.test(document.getElementById('nestrow').textContent);
+  const outerKept = /[\u0600-\u06FF]/.test(document.getElementById('nestouter').textContent);
+  const restoreMarksSnapshot = nest.restoreAll();
+  nest.dispose();
+  host.remove();
+  restoreMarks(marks);
+
+  record('12 · مفاتيح الأسطح مستقلّة فوق جذور متداخلة (صفّ الأداة داخل كتلة الردّ)',
+    outerArabic && rowEnglishWithKeyOff && callsWithKeyOff === 1 && rowArabic && attributed && rowBack && outerKept,
+    `الردّ عربي=${outerArabic} · الصفّ إنجليزي والمفتاح مطفأ=${rowEnglishWithKeyOff} · نداءات بمفتاح مطفأ=${callsWithKeyOff} · الصفّ عربي=${rowArabic} · السطح المنسوب=${rec ? rec.surface : 'لا سجلّ'} · عاد الصفّ وحده=${rowBack && outerKept} · استرجاع=${restoreMarksSnapshot >= 0}`);
+}
+
+/**
+ * 0.8 — THE LIMITED ATTRIBUTES PATH (`title` / `aria-label`), and its five boundaries.
+ *
+ * Justified by a measurement, not by taste: the live Logcat panel carries 93 `title`
+ * attributes holding 4,625 characters against 3,364 characters of visible text — the full log
+ * line lives in the attribute, and a text observer sees none of it.
+ *
+ * What this check refuses to let slip:
+ *   (a) the settle window applies to attributes too (the observer cannot see attribute writes,
+ *       so the clock is the element's own subtree) — clicking immediately must call NOTHING;
+ *   (b) prose inside a declared surface IS translated, exactly once;
+ *   (c) data is not prose: a file path and a URL keep their bytes;
+ *   (d) an element outside every declared surface is never touched;
+ *   (e) restore hands back the original byte-for-byte.
+ */
+async function check13_attributes() {
+  resetQuiet();
+  for (const id of ['b1t', 'b2t', 'b3t']) { const el = document.getElementById(id); if (el) el.textContent = ''; }
+  document.getElementById('login').textContent = '';
+  const PROSE = 'A long tooltip that no text observer can see at all.';
+  const PATH = 'C:\\Code-backup\\dsh-translate-this\\PLAN.md';
+  const URL_ = 'https://example.com/path?token=abc';
+  const block = document.createElement('div');
+  block.className = 'block';                              // ⇒ inside the page's `replies` surface
+  // `PATH_SPACED` is the fixture that makes the "data is not prose" guard LOAD-BEARING: a path
+  // WITH spaces passes the one-word rule above it, so only the path guard can refuse it. An
+  // independent verification removed the path guard and every check still passed (audit ح-28),
+  // because the old fixtures were all space-free.
+  const PATH_SPACED = 'C:\\Program Files\\Some App\\config\\settings.json';
+  block.innerHTML = '<span id="attrt" title="' + PROSE + '">tt</span>' +
+    '<span id="attrpath" title="' + PATH + '">pp</span>' +
+    '<span id="attrspaced" title="' + PATH_SPACED + '">sp</span>' +
+    '<span id="attrurl" title="' + URL_ + '">uu</span>';
+  document.getElementById('left').append(block);
+  const outside = document.createElement('div');
+  outside.id = 'attroutside';
+  outside.setAttribute('title', 'A tooltip outside every declared surface, so it is none of our business.');
+  outside.textContent = 'oo';
+  document.getElementById('left').append(outside);        // in #left, but not a `.block` ⇒ no surface
+  rescan();
+
+  const before = ENGINE.calls;
+  const targets = INTERNALS.state.replies.attrTargets;
+  DCT.translate(['replies']);                             // inside the settle window, on purpose
+  // Polled, not slept through: the settle window is a CONDITION, and the check reports the
+  // timeline that shows where the path stops if it ever stops again (the first version of this
+  // check failed with «مؤجَّلة=0 طابور=0 محاولات=0» and no way to tell which link broke).
+  const seen = [];
+  for (let i = 0; i < 16; i += 1) {
+    await wait(60);
+    seen.push({ q: INTERNALS.attrQueue.length, att: DCT.counters.attrAttempts, def: DCT.counters.settleDeferrals, inj: DCT.counters.attrInjections, calls: ENGINE.calls - before });
+  }
+  const callsInWindow = seen[3] ? seen[3].calls : -1;     // ~240 ms in: still inside the window
+  const title = document.getElementById('attrt').getAttribute('title');
+  const asked = /[\u0600-\u06FF]/.test(title);
+  const injected = DCT.counters.attrInjections;
+  const pathKept = document.getElementById('attrpath').getAttribute('title') === PATH;
+  const spacedPathKept = document.getElementById('attrspaced').getAttribute('title') === PATH_SPACED;
+  const urlKept = document.getElementById('attrurl').getAttribute('title') === URL_;
+  const outsideKept = outside.getAttribute('title') === 'A tooltip outside every declared surface, so it is none of our business.';
+  const restoresBefore = DCT.counters.attrRestores;
+  DCT.restoreAll();
+  await wait(60);
+  const restoredLiteral = document.getElementById('attrt').getAttribute('title') === PROSE;
+  const restoredCount = DCT.counters.attrRestores - restoresBefore;
+
+  // …and a DEFERRED pass must not survive a restore. Measured on a live panel: an undo left 41% of
+  // the panel Arabic because the settle timer fired after it. The generation now rides with the
+  // deferral, and this asserts the cure: ask, undo INSIDE the window, then wait well past it.
+  const SECOND = 'A second tooltip that no text observer can see at all.';
+  document.getElementById('attrt').setAttribute('title', SECOND);
+  INTERNALS.attrSeen.delete(document.getElementById('attrt'));   // first sight again: a fresh settle window
+  const callsBeforeUndo = ENGINE.calls;
+  DCT.translate(['replies']);
+  await wait(120);                                              // inside the window: nothing sent yet
+  DCT.restoreAll();                                             // the user asks the original back
+  await wait(900);                                              // past SETTLE_MS
+  const deferredDied = document.getElementById('attrt').getAttribute('title') === SECOND;
+  const callsAfterUndo = ENGINE.calls - callsBeforeUndo;
+  block.remove(); outside.remove();
+
+  record('13 · مسار السمات المحدود: نافذة الاستقرار، وحصر الأسطح، والبيانات لا تُترجم، والاسترجاع حرفي',
+    callsInWindow === 0 && asked && injected === 1 && pathKept && spacedPathKept && urlKept && outsideKept && restoredLiteral && restoredCount === 1 &&
+    deferredDied && callsAfterUndo === 0,
+    `نداءات داخل النافذة=${callsInWindow} · التلميح عربي=${asked} · سمات محقونة=${injected} · المسار كما هو=${pathKept} · مسار بمسافات كما هو=${spacedPathKept} · الرابط كما هو=${urlKept} · خارج الأسطح كما هو=${outsideKept} · استُعيد حرفيًّا=${restoredLiteral} (${restoredCount}) · الترجمة المؤجَّلة ماتت مع الاسترجاع=${deferredDied} (نداءات بعد الاسترجاع=${callsAfterUndo}) · أهداف=${targets} · الزمن=${JSON.stringify(seen.filter((r, i) => i === 0 || i === 15 || r.att || r.inj))} · رفض=${REJECTIONS.length ? REJECTIONS.join(' | ') : 'لا شيء'}`);
+}
+
+/**
+ * 0.8 — THE PROGRESS READOUT IS A READING, not a timer (the 0.5 rule, applied to the panel).
+ *
+ * Polls the layer's own `progress` accessor — the same one the panel renders — while a slow
+ * engine works, and asserts three states: idle ⇒ not busy, working ⇒ busy with a real
+ * in-flight count, drained ⇒ not busy and empty queues. A `busy` that is a flag (or a timer)
+ * fails the middle state; a `busy` stuck true fails the third.
+ */
+async function check14_progress() {
+  resetQuiet();
+  ENGINE.latency = 350;
+  onlyFixture('A sentence for the progress readout. And a second sentence to make it a batch.');
+  await wait(600);
+  const idle = DCT.progress.busy === false && DCT.progress.inflight === 0;
+  DCT.translate(['replies']);
+  let sawBusy = false, maxInflight = 0, maxQueued = 0, maxWaiting = 0, agreed = true;
+  for (let i = 0; i < 60; i += 1) {
+    const p = DCT.progress;
+    // The spinner (`layer.busy`) and the progress line (`progress.busy`) are ONE reading, and the
+    // check compares them: an independent verification removed the spinner's getter, broke the live
+    // UI, and every check still passed (audit ح-28).
+    if (DCT.busy !== p.busy) agreed = false;
+    if (p.busy) {
+      sawBusy = true;
+      maxInflight = Math.max(maxInflight, p.inflight);
+      maxQueued = Math.max(maxQueued, p.queued + p.attrsQueued);
+      maxWaiting = Math.max(maxWaiting, p.blocksWaiting);
+    }
+    if (sawBusy && !p.busy) break;
+    await wait(50);
+  }
+  ENGINE.latency = 0;
+  await wait(250);
+  const settled = DCT.progress.busy === false && DCT.progress.inflight === 0 && DCT.progress.queued === 0 && DCT.progress.attrsQueued === 0;
+  // The panel must show the LAYER's numbers, not a parallel count of its own.
+  const wired = DCT.progress.queued === DCT.queue.length && DCT.progress.attrsQueued === INTERNALS.attrQueue.length && DCT.progress.inflight === INTERNALS.inflight;
+  record('14 · لوحة التقدّم تقرأ حالة حقيقيّة (خامل ⇒ ليس مشغولًا · أثناء العمل ⇒ عدّاد جارٍ · بعد الفراغ ⇒ صفر)',
+    idle && sawBusy && maxInflight >= 1 && maxWaiting >= 1 && settled && wired && agreed,
+    `خامل=${idle} · رأينا الانشغال=${sawBusy} · أقصى نداءات جارية=${maxInflight} · أقصى كتل تنتظر=${maxWaiting} · أقصى طابور=${maxQueued} · فرغ=${settled} · مربوط بالطبقة=${wired}`);
+}
+
+/**
+ * 0.8 — THE SHIPPED SURFACE TABLE IS THE MEASURED ONE.
+ *
+ * The five selectors in `lib/client.js` were measured on a live GUI (73 tool rows, a document
+ * preview with 1,084 elements, a live Logcat panel, a settings window) — and a measurement
+ * that nothing guards is a measurement that quietly rots. This check builds a mirror of that
+ * measured markup, drives the SHIPPED table (`MODULE.SURFACES`) over it, and requires a root
+ * for every surface. It also pins the false positive the measurement found: `[role="dialog"]`
+ * matched the «Preview Notice» modal, so a notice could have been translated as settings —
+ * the settings surface must match the settings window and NOT the notice.
+ *
+ * It runs LAST on purpose: it builds a second layer, and disposing a layer sweeps direction
+ * marks from the page, which must not land in the middle of another check's assertions.
+ */
+async function check15_registry() {
+  const marks = preserveMarks();
+  const host = document.createElement('div');
+  // A mirror of the MEASURED live DOM, including the two findings that killed the old table:
+  // a plugin panel is a PAGE in the main seat (not a dock pane), and a plugin can own any seat
+  // (measured: another plugin's real button in `sidebar.footer.action`).
+  host.innerHTML = [
+    // the page seat: the shell renders the active page as a CHILD of `main`, and marks only its
+    // own conversation page — a plugin page is the unmarked sibling (measured on a live GUI)
+    '<div data-slot="main" id="m-main"><div data-slot="main.conversation"><span>A conversation page line, long enough to matter.</span></div>' +
+      '<div id="m-page"><span>A plugin page line, long enough to be translated.</span></div></div>',
+    '<div data-slot="sidebar.footer.action" id="m-seat"><span>A third-party seat line, long enough to matter.</span></div>',
+    '<div data-slot="sidebar.panellist" id="m-chrome-seat"><span>A shell seat line, long enough to matter.</span></div>',
+    '<div data-conversation-content=""><span>A conversation root line, long enough to matter.</span></div>',
+    '<div data-tool="pwsh" data-state="ok" id="m-tool"><span>A tool output line, long enough to matter.</span></div>',
+    '<div data-document-preview="pkg" id="m-prev"><span>A previewed document line, long enough to matter.</span></div>',
+    '<section data-dockkit-pane="pane1" id="m-dock"><span>A dock pane line, long enough to matter here.</span></section>',
+    '<div data-shortcut-modal="settings" id="m-modal"><span>A shell window line, long enough to matter.</span></div>',
+  ].join('');
+  document.body.append(host);
+  // The seat ledger, in the shape `ctx.slots.snapshot()` returns: identity + who registered it.
+  // One third-party owner, the rest the harness itself — the ONLY thing that decides chrome vs
+  // plugin surface, and it names no plugin in our code.
+  const ledger = {
+    snapshot: () => ([
+      { type: 'slot', name: 'sidebar.footer.action', kind: 'single', occupants: [{ registrant: 'some-other-plugin', order: 1 }], children: [] },
+      { type: 'slot', name: 'm-page', kind: 'single', occupants: [{ registrant: 'another-plugin-entirely' }], children: [] },
+      { type: 'slot', name: 'main', kind: 'keyed', declaredBy: '(built-in)', occupants: [{ registrant: '@deepseek-ai/dsh-client-ui-conversation' }], children: [] },
+      { type: 'slot', name: 'sidebar.panellist', kind: 'list', declaredBy: '(built-in)', occupants: [{ registrant: '@deepseek-ai/dsh-client-ui-sidebar' }], children: [] },
+    ])
+  };
+  const reg = MODULE.createLayer({ engine: pageEngine, slots: ledger, onChange: () => {} });
+  reg.scanRoots();
+  const ids = Object.keys(reg.state);
+  const seat = reg.state['seat:sidebar.footer.action'];
+  const page = reg.state['part:main.page'];
+  const tool = reg.state['part:data-tool'];
+  const modal = reg.state['part:data-shortcut-modal'];
+  const dock = reg.state['part:data-dockkit-pane'];
+  const conv = reg.state['part:data-conversation-content'];
+  const chromeSeat = reg.state['seat:sidebar.panellist'];
+  const seatOnAtBoot = !!seat && seat.on === false;      // the rule: a seat is a KEY first, a target only if asked
+
+  // (b) dynamic: a seat that appears later enters the registry, and one that goes away leaves it
+  const late = document.createElement('div');
+  late.setAttribute('data-slot', 'brand.new.seat');
+  late.innerHTML = '<span>A seat that did not exist at boot, long enough to matter.</span>';
+  host.append(late);
+  await wait(300);
+  reg.scanRoots();
+  const lateId = Object.keys(reg.state).find((id) => id === 'seat:brand.new.seat');
+  const lateRoots = lateId ? reg.state[lateId].roots : 0;
+  const lateOff = lateId ? reg.state[lateId].on === false : false;   // a new seat: its own key, off until asked
+  late.remove();
+  await wait(300);
+  reg.scanRoots();
+  const lateGone = !Object.keys(reg.state).includes('seat:brand.new.seat');
+
+  // (c) THE CACHE RULE, measured from the layer: a third-party surface stores NOTHING…
+  const before = { cache: reg._internals.cache.size, segments: reg.segments.size };
+  reg.translateElement(document.getElementById('m-seat'));
+  await wait(600);
+  const seatArabic = /[\u0600-\u06FF]/.test(document.getElementById('m-seat').textContent);
+  const noEntries = reg._internals.cache.size === before.cache && reg.segments.size === before.segments;
+  // …while a TRUSTED surface still uses both, so the zero above is a policy and not a broken pipe.
+  reg.setSurface('part:data-conversation-content', true);
+  reg.translateRoots(['part:data-conversation-content']);
+  await wait(600);
+  const trustedFilled = reg._internals.cache.size > before.cache || reg.segments.size > before.segments;
+  const convArabic = /[\u0600-\u06FF]/.test(host.querySelector('[data-conversation-content]').textContent);
+  // (d) the shell hands us an element that matches NO registry identity: it must still be
+  // translatable, and it must SURVIVE the next registry sync (the sync is throttled to 200 ms,
+  // so the wait below is a measurement of the window, not padding).
+  const alien = document.createElement('div');
+  alien.id = 'm-alien';
+  alien.innerHTML = '<span>An element no identity claims, long enough to be translated.</span>';
+  host.append(alien);
+  await wait(300);
+  reg.scanRoots();
+  reg.translateElement(alien);
+  await wait(600);
+  const alienArabic = /[\u0600-\u06FF]/.test(alien.textContent);
+  const alienKey = Object.values(reg.state).filter((s) => s.kind === 'handed').length;
+  // FORCE the sync the guard protects against. An independent verification showed the old sampling
+  // passed even with the guard removed: the sweep only happens when a sync RUNS, and a sync needs a
+  // mutation (plus the 200 ms throttle). So mutate twice with waits that let the throttle open.
+  for (let i = 0; i < 2; i += 1) {
+    const noise = document.createElement('div');
+    noise.textContent = 'a mutation that exists only to arm a registry sync';
+    host.append(noise);
+    await wait(280);
+    reg.scanRoots();                                  // and ask for the sync explicitly as well
+    await wait(120);
+  }
+  const alienSurvived = /[\u0600-\u06FF]/.test(alien.textContent) && Object.values(reg.state).some((s) => s.kind === 'handed');
+  reg.dispose();
+  host.remove();
+  restoreMarks(marks);
+
+  record('15 · سجلّ الأسطح يُولَّد وقت التشغيل من مقاعد الشل (لا جدول مكتوب): هوية · مالك · ديناميكيّة · صفر كاش للطرف الثالث',
+    !!seat && seatOnAtBoot && seat.trust === 'untrusted' && seat.roots === 1 &&
+    !!page && page.roots === 1 && page.trust === 'untrusted' &&
+    !!tool && tool.roots === 1 && !!conv && conv.roots === 1 &&
+    !!dock && !!modal && modal.on === false && !!chromeSeat && chromeSeat.on === false &&
+    lateRoots === 1 && lateOff && lateGone &&
+    seatArabic && noEntries && convArabic && trustedFilled && alienArabic && alienSurvived,
+    `مفاتيح=${ids.length} · مقعد طرف ثالث=${seat ? seat.roots + '/' + seat.trust + '/on=' + seat.on : 'مفقود'} · صفحة اللوحة=${page ? page.roots : 'مفقودة'} · صفّ الأداة=${tool ? tool.roots : 'مفقود'} · جذر المحادثة=${conv ? conv.roots : 'مفقود'} · نافذة الشل on=${modal ? modal.on : 'مفقودة'} · مقعد الشل on=${chromeSeat ? chromeSeat.on : 'مفقود'} · مقعد متأخّر=${lateRoots} on=${lateOff} ثمّ زال=${lateGone} · المقعد مفاتيح-أولًا=${seatOnAtBoot} · اللوحة عربية=${seatArabic} · صفر إدخالات للطرف الثالث=${noEntries} · سطح موثوق يملأ الكاش=${trustedFilled} · مقعد مُسلَّم بلا هوية: عربي=${alienArabic} نجا من المزامنة=${alienSurvived} (مفاتيح=${alienKey})`);
+}
+
+/* A temporary layer's dispose() sweeps direction marks from the page (its own safety net);
+   the long-lived layer's marks must survive that sweep, so they are snapshotted around it. */
+function preserveMarks() {
+  return Array.from(document.querySelectorAll('[data-dct-mark]')).map((el) => [el, el.getAttribute('dir')]);
+}
+function restoreMarks(snapshot) {
+  for (const [el, dir] of snapshot) {
+    if (!el.hasAttribute('data-dct-mark')) el.setAttribute('data-dct-mark', '1');
+    if (dir) el.setAttribute('dir', dir);
+  }
+}
+
+/**
+ * 0.8 — THE QUEUE MUST DRAIN even when a scan frame is already in the air.
+ *
+ * The bug (audit ح-24) was a shared animation-frame flag: the observer arms its scan frame, and a
+ * translation asked for in that same frame was swallowed by it — the queue then sat there until a
+ * LATER mutation pumped again, and on a settled page there is no later mutation. An independent
+ * verification could not reproduce that with the old checks because the collision needs a MUTATION
+ * and a CLICK inside one frame; this check stages exactly that:
+ *   1. write a fixture inside a declared surface (the observer arms its frame),
+ *   2. yield ONE macrotask so the observer callback runs — the frame is now in the air,
+ *   3. ask for the translation in that same frame (the old code returned early here),
+ *   4. require the queue to drain anyway.
+ */
+async function check16_noFrameLeavesWorkQueued() {
+  resetQuiet();
+  const stage = document.createElement('div');
+  stage.className = 'block';
+  stage.innerHTML = '<span id="collide">A block left in the queue when a frame runs, long enough.</span>';
+  document.getElementById('left').append(stage);
+  for (const id of ['b1t', 'b3t']) { const el = document.getElementById(id); if (el) el.textContent = ''; }
+  document.getElementById('login').textContent = '';
+  rescan();
+  await wait(600);                                   // the fixture is past its settle window on purpose
+  const before = ENGINE.calls;
+  // Exactly what a swallowed pump leaves behind: work IN the queue, and NO pump armed for it.
+  // This is ح-24's shape, reproduced on purpose — and the invariant under test is that a FRAME
+  // drains what it finds, whoever put it there. (An independent verification proved that the older
+  // "was the pump swallowed?" check could not fail here at all: once the flags were split, every
+  // pump that returns early is followed by a frame that drains — the failure had become
+  // unreachable, which is the cure, not a missing guard. The provable formulation is the invariant.)
+  const target = document.getElementById('collide').firstChild;
+  INTERNALS.queue.push(target);
+  const queuedBefore = INTERNALS.queue.length;
+  // Arm the observer's scan frame with a mutation OUTSIDE every declared surface: real enough to
+  // arm a frame, invisible to the layer, and with no eligible node of its own to confuse the count.
+  const arm = document.createElement('div');
+  arm.textContent = 'x';
+  document.body.append(arm);
+  let drained = false;
+  for (let i = 0; i < 40; i += 1) {                  // a measured condition, not a guessed sleep
+    await wait(50);
+    if (INTERNALS.queue.length === 0 && INTERNALS.attrQueue.length === 0) { drained = true; break }
+  }
+  const arabic = /[\u0600-\u06FF]/.test(document.getElementById('collide').textContent);
+  const calls = ENGINE.calls - before;
+  arm.remove();
+  stage.remove();
+  record('16 · لا إطار ينتهي وعمل في الطابور (إطار المسح يفرّغ مثل المضخّة)',
+    queuedBefore === 1 && drained && arabic && calls >= 1,
+    `وُضع في الطابور=${queuedBefore} · فرغ الطابور=${drained} · النصّ عربي=${arabic} · نداءات=${calls}`);
+}
+
 function renderResults() {
   muted(() => {
     const tbody = document.querySelector('#results tbody');
@@ -744,6 +1132,8 @@ function renderCounters() {
       ['مُخطَّى: حيّ/زائل', c.volatileSkipped], ['انتظار استقرار', c.settleDeferrals],
       ['توكنات (دخل/خرج)', c.usageCalls ? (c.tokensIn + '/' + c.tokensOut + ' · كاش ' + c.cacheReadTokens) : (c.usageUnknown ? 'غير معروف' : '—')],
       ['استسلام (حلقة)', c.giveUps], ['نتائج متأخرة مُهمَلة', c.droppedLate],
+      ['سمات مُترجمة (title/aria-label)', c.attrInjections + (c.attrRestores ? ' · أُعيد ' + c.attrRestores : '') + (c.attrDropped ? ' · مُهمَلة ' + c.attrDropped : '')],
+      ['في إطار: طابور/سمات/نداءات', DCT.queue.length + '/' + INTERNALS.attrQueue.length + '/' + INTERNALS.inflight],
       ['وميض إنجليزي', Math.round(c.flickerMs) + ' ms'], ['مخالفات شبكة', c.network],
       ['حلقة مشتبهة', DCT.loopFlag ? 'نعم — أُوقفت الطبقة' : 'لا'],
     ];
@@ -780,9 +1170,13 @@ function resetQuiet() {
   c.failedBatches = 0; c.alignmentFailures = 0; c.volatileSkipped = 0; c.settleDeferrals = 0;
   c.usageCalls = 0; c.usageUnknown = 0; c.tokensIn = 0; c.tokensOut = 0; c.cacheReadTokens = 0; c.cacheWriteTokens = 0;
   c.lastCallMs = 0; c.lastUsage = null;
+  c.attrInjections = 0; c.attrRestores = 0; c.attrDropped = 0;
   c.englishSince.clear();
   INTERNALS.deferrals.clear(); INTERNALS.volatile.clear(); INTERNALS.volatileNoted.clear();
   INTERNALS.lastWrite.clear(); INTERNALS.writes.clear(); INTERNALS.lastValue.clear();
+  // The attribute path keeps its own clocks: a settle window carried over from the previous
+  // check would defer the next one's first click, and the check would measure the leftover.
+  INTERNALS.attrSeen.clear(); INTERNALS.attrDefer.clear(); INTERNALS.attrQueue.length = 0;
   INTERNALS.debug = null;                    // the red line is state too: each check starts clean
   DCT.loopFlag = false; DCT.rate = []; DCT.enabled = true;
   muted(() => { document.getElementById('log').textContent = '' });
@@ -813,6 +1207,11 @@ async function runAll() {
   await check9_costCounter();
   await check10_surfaceState();
   await check11_integrityGate();
+  await check12_surfaceKeys();
+  await check13_attributes();
+  await check14_progress();
+  await check16_noFrameLeavesWorkQueued();
+  await check15_registry();              // last: it builds and disposes a second layer
   const failed = RESULTS.filter((r) => !r.ok).length;
   muted(() => { document.getElementById('spState').textContent = failed === 0 ? 'كل الفحوص نجحت' : (failed + ' فشل') });
   log('== ' + (RESULTS.length - failed) + '/' + RESULTS.length + ' PASS ==');
@@ -881,3 +1280,8 @@ if (new URLSearchParams(location.search).has('auto')) {
 </script>
 </body>
 </html>
+
+
+
+
+
