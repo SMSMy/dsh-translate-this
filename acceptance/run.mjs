@@ -20,12 +20,12 @@
  *                           [--keep-profile]
  * Exit code: 0 = every mode passed · 1 = a check failed · 2 = the harness itself broke.
  */
-import { spawn, spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sleep, defaultChrome, launchChrome, killTree, client, openTab, pageErrors } from './cdp.mjs'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 // The page loads `../lib/client.js` — the file that ships — so the server must span the
@@ -38,7 +38,6 @@ const argOf = (name, fallback) => {
   return i === -1 ? fallback : args[i + 1]
 }
 const has = (name) => args.includes('--' + name)
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const PORT = Number(argOf('port', '19555'))
 const PAGE = argOf('url', `http://127.0.0.1:${PORT}/acceptance/index.html`)
@@ -48,18 +47,6 @@ const JSON_OUT = has('json')
 const VERBOSE = has('verbose')
 const KEEP_PROFILE = has('keep-profile')
 const SHOTS = argOf('shots', null)      // write PNG evidence here (drives the page's own buttons)
-
-function defaultChrome() {
-  const candidates = [
-    process.env.DCT_CHROME,
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-  ].filter(Boolean)
-  return candidates.find((p) => existsSync(p)) || 'chrome'
-}
 const CHROME = argOf('chrome', defaultChrome())
 
 /* ------------------------------------------------------------------ environment --- */
@@ -79,88 +66,9 @@ async function ensureServer() {
   throw new Error(`no server answered on ${PAGE} and serve.mjs could not start one`)
 }
 
-async function launchChrome(profile) {
-  // `--disable-extensions`: an extension's own content scripts show up in resource
-  // timing and would be counted as "the page made a request" (measured with AdGuard).
-  // The check itself no longer depends on that, but a gate should not measure the
-  // reviewer's browser setup.
-  const child = spawn(CHROME, [
-    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-    '--disable-extensions', '--disable-background-networking', '--remote-debugging-port=0',
-    `--user-data-dir=${profile}`, 'about:blank'
-  ], { stdio: 'ignore' })
-  const portFile = join(profile, 'DevToolsActivePort')
-  for (let i = 0; i < 300; i += 1) {
-    if (existsSync(portFile)) {
-      const [port] = (await readFile(portFile, 'utf8')).split('\n')
-      if (port) return { child, port: Number(port) }
-    }
-    if (child.exitCode !== null) throw new Error(`chrome exited early (code ${child.exitCode})`)
-    await sleep(50)
-  }
-  throw new Error('chrome never wrote DevToolsActivePort')
-}
-
-function killTree(child) {
-  if (!child || child.exitCode !== null) return
-  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
-  else child.kill('SIGKILL')
-}
-
-/* ---------------------------------------------------------------- devtools glue --- */
-function client(ws) {
-  let next = 0
-  const pending = new Map()
-  const events = []
-  ws.addEventListener('message', (ev) => {
-    let msg
-    try { msg = JSON.parse(ev.data) } catch { return }
-    if (msg.id && pending.has(msg.id)) {
-      const { resolve, reject } = pending.get(msg.id)
-      pending.delete(msg.id)
-      if (msg.error) reject(new Error(msg.error.message)); else resolve(msg.result)
-    } else if (msg.method) {
-      events.push(msg)
-    }
-  })
-  return {
-    events,
-    send(method, params = {}) {
-      const id = (next += 1)
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject })
-        ws.send(JSON.stringify({ id, method, params }))
-      })
-    }
-  }
-}
-
-async function openTab(port, url) {
-  const res = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' })
-  if (!res.ok) throw new Error(`could not open a tab (HTTP ${res.status}); is this Chrome new enough for PUT /json/new?`)
-  const target = await res.json()
-  const ws = new WebSocket(target.webSocketDebuggerUrl)
-  await new Promise((resolve, reject) => {
-    ws.addEventListener('open', resolve, { once: true })
-    ws.addEventListener('error', () => reject(new Error('devtools socket failed to open')), { once: true })
-  })
-  return ws
-}
-
-const pageErrors = (api) => {
-  const out = []
-  for (const e of api.events) {
-    if (e.method === 'Runtime.exceptionThrown') {
-      const d = e.params.exceptionDetails
-      out.push('exception: ' + (d.exception?.description || d.text || '').split('\n')[0])
-    } else if (e.method === 'Log.entryAdded' && e.params.entry.level === 'error') {
-      out.push('log: ' + e.params.entry.text.split('\n')[0])
-    } else if (e.method === 'Runtime.consoleAPICalled' && e.params.type === 'error') {
-      out.push('console: ' + e.params.args.map((a) => a.value ?? a.description ?? '').join(' ').split('\n')[0])
-    }
-  }
-  return [...new Set(out)].slice(0, 8)
-}
+/* Chrome launching, the CDP client, tab opening and error collection live in
+   `cdp.mjs` — shared with `tools/gui-probe.mjs`, so there is exactly one
+   implementation of each. */
 
 /* ---------------------------------------------------------------- visual proof ---
    The DOM metrics say the Arabic text is there; a screenshot is what a reviewer
