@@ -130,29 +130,43 @@ function slowStream () {
 }
 
 /**
- * A model whose FIRST token is far away. This fixture exists because an independent verification
- * proved the earlier one could not reach the guard it was supposed to guard: cutting at 220ms
- * against a generator whose first chunk lands at 20ms always leaves the first message shape
- * NON-empty, so the second shape is never attempted. Remove the abort check inside the shapes
- * loop with that fixture and the gate still passes (measured: `8/8 HOST GATE OPEN`). With a late
- * first token the difference is total — measured by the verifier's own probe on five runs:
- * guard present `calls=[1,1,1,1,1]`, guard removed `calls=[1,2,2,1,1]` — a SECOND PAID CALL for a
- * reader who had already left.
+ * A model that waits for the abort and then comes back EMPTY — which is what a real provider
+ * stream does when its HTTP request is aborted, and it is the FIRST message shape doing it.
+ *
+ * This fixture replaced a timed one (`lateStream`, first token at 350ms) after an independent
+ * verification measured that fixture as non-deterministic IN BOTH DIRECTIONS: 1 clean run in 6
+ * went red (`code=null · aborted=false · chunks=10`) and 1 removal run in 10 went green. The
+ * cause is not the plugin: "how fast a dead socket is noticed" is the OS's business and was
+ * measured between ~20ms and >550ms on this machine, so any fixture that races the first token
+ * against that notice measures the machine, not the guard. Here the first shape CANNOT return
+ * before the abort is observed, so the discriminator is exact: with the guard the batch stops at
+ * one call, without it a second paid call is made.
  */
-function lateStream () {
+function awaitAbortStream () {
   return (options) => ({
     async *[Symbol.asyncIterator] () {
-      await sleep(350)
-      if (options?.signal?.aborted) { generatorState.aborted = true; return }
-      for (let i = 0; i < 10; i += 1) {
-        if (options?.signal?.aborted) { generatorState.aborted = true; return }
-        generatorState.yielded = (generatorState.yielded || 0) + 1
-        yield { type: 'text-delta', text: 'متأخّر ' + i }
-        await sleep(20)
-      }
-      yield { type: 'finish', reason: 'stop' }
+      const t0 = Date.now()
+      while (!options?.signal?.aborted && Date.now() - t0 < 4000) await sleep(20)
+      if (options?.signal?.aborted) generatorState.aborted = true
+      else generatorState.neverAborted = true
+      return                                   // no text: the aborted shape answers nothing
     }
   })
+}
+
+/** Wait for a MEASURED condition (audit ح-18), never for a guessed delay. */
+async function waitFor (fn, ms, step = 40) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) { if (fn()) return true; await sleep(step) }
+  return !!fn()
+}
+
+/** Wait until the host has written at least one call into its own log, then return that log. */
+async function waitForCall (ms) {
+  const t0 = Date.now()
+  let log = await getRequest(ROUTE + '/log')
+  while (Date.now() - t0 < ms && (log.json?.totals?.calls ?? 0) === 0) { await sleep(80); log = await getRequest(ROUTE + '/log') }
+  return log
 }
 
 /* ---------------------------------------------------------------------- the server --- */
@@ -270,33 +284,37 @@ console.log(`host gate · lib/index.js ${hashOf(join(ROOT, 'lib', 'index.js')).s
     setTimeout(() => { generatorState.destroyedAt = Date.now(); request.destroy() }, 220)
   }
   await postRequest(ROUTE + '/translate', { segments: ['a long reply the client walks away from'], target: 'ar' }, { handOff })
-  await sleep(900)
-  const log = await getRequest(ROUTE + '/log')
+  // Wait for MEASURED conditions only: the abort reaching the model, then the log entry.
+  const sawAbort = await waitFor(() => generatorState.aborted === true, 3000)
+  const log = await waitForCall(1500)
   const calls = log.json?.calls ?? []
   const first = calls[0] || {}
   check('H4 · قطع العميل في منتصف البثّ ⇒ إيقاف المحرّك بلا إعادة محاولة وبسجلّ صادق',
-    generatorState.aborted === true && (generatorState.afterAbort || 0) === 0 && host.state.streamCalls === 1 &&
+    sawAbort && generatorState.aborted === true && (generatorState.afterAbort || 0) === 0 && host.state.streamCalls === 1 &&
       log.json?.totals?.calls === 1 && first.code === 'CLIENT_GONE' && first.ok === false,
     `streamAborted=${generatorState.aborted === true} · chunksAfterAbort=${generatorState.afterAbort || 0}/${generatorState.yielded || 0} · streamCalls=${host.state.streamCalls} · logCalls=${log.json?.totals?.calls} · code=${first.code ?? 'null'} · ok=${first.ok ?? 'null'} · chunksAfterSocketDeath=${generatorState.afterDestroy || 0}`)
 }
 
 /* H4b — the same walk-away, but BEFORE the first token: no second paid call. --------------
    An independent verification removed the abort check inside the message-shape loop and this
-   gate still passed (8/8) — the fixture above cannot reach it, because chunks arrive first and
-   the first shape comes back non-empty. So the shape guard gets its own fixture: the client
-   leaves while the model has produced nothing yet, and the difference is one whole extra call. */
+   gate still passed (`8/8`) — the fixture above cannot reach it, because chunks arrive first and
+   the first shape comes back non-empty. So the shape guard gets its own fixture, and that
+   fixture is NOT timed: `awaitAbortStream` makes the first shape answer EMPTY only once the
+   abort is observed, so the outcome cannot race the OS's socket-death notice (which the same
+   verification measured as non-deterministic in both directions for the timed version). */
 {
   for (const key of Object.keys(generatorState)) delete generatorState[key]
-  const host = fakeHost({ stream: lateStream() })
+  const host = fakeHost({ stream: awaitAbortStream() })
   handlerRef = mount(host)
   const handOff = (request) => { setTimeout(() => request.destroy(), 60) }
-  await postRequest(ROUTE + '/translate', { segments: ['a reply whose first token arrives after the client left'], target: 'ar' }, { handOff })
-  await sleep(900)
-  const log = await getRequest(ROUTE + '/log')
+  await postRequest(ROUTE + '/translate', { segments: ['a reply whose first token never arrives because the client left'], target: 'ar' }, { handOff })
+  const sawAbort = await waitFor(() => generatorState.aborted === true, 4500)
+  const log = await waitForCall(2000)
   const first = (log.json?.calls ?? [])[0] || {}
   check('H4b · الإلغاء قبل أول قطعة ⇒ لا نداء ثانٍ لشكل الرسالة (توكنات محفوظة)',
-    host.state.streamCalls === 1 && log.json?.totals?.calls === 1 && first.code === 'CLIENT_GONE',
-    `streamCalls=${host.state.streamCalls} · logCalls=${log.json?.totals?.calls} · code=${first.code ?? 'null'} · aborted=${generatorState.aborted === true} · chunks=${generatorState.yielded || 0}`)
+    sawAbort && generatorState.aborted === true && generatorState.neverAborted !== true &&
+      host.state.streamCalls === 1 && log.json?.totals?.calls === 1 && first.code === 'CLIENT_GONE',
+    `streamCalls=${host.state.streamCalls} · logCalls=${log.json?.totals?.calls} · code=${first.code ?? 'null'} · aborted=${generatorState.aborted === true} · neverAborted=${generatorState.neverAborted === true} · chunks=${generatorState.yielded || 0}`)
 }
 
 /* H5 — the optional skill service must not be able to kill the fiber. ------------------ */
