@@ -1107,6 +1107,100 @@ async function check16_noFrameLeavesWorkQueued() {
     `وُضع في الطابور=${queuedBefore} · فرغ الطابور=${drained} · النصّ عربي=${arabic} · نداءات=${calls}`);
 }
 
+/* ---------------------------------------------------------------------------------------
+   0.8 hardening — the two things an external evaluation proved and no check here measured:
+   what the plugin leaves behind when it is disposed, and whether a cancel actually stops the
+   host from paying. Both drive the SHIPPING module (`MODULE`), not a copy of it.
+   ------------------------------------------------------------------------------------- */
+
+/**
+ * 17 — teardown. `apply()` is mounted with a fake ctx that keeps every disposer `ctx.effect`
+ * returns, then those disposers are run in reverse (cordis order) and the page is asked what
+ * is left. Measured before the fix: the `<style>` element stayed, the diagnostic handle stayed,
+ * and the `/status` fetch stayed in the air with a live signal — a plugin that "unloads" and
+ * keeps writing to the page.
+ */
+async function check17_teardown() {
+  resetQuiet();
+  const effects = [];
+  const ctx = {
+    slots: { inject() { /* accepted, never rendered: this check drives teardown, not React */ }, register() { return () => {}; } },
+    effect(fn) { const d = fn(); effects.push(d); return () => {}; },
+    logger: { info() {}, warn() {}, debug() {}, error() {} },
+    get() { return null; }
+  };
+  let seenSignal = null;
+  const realFetch = window.fetch;
+  window.fetch = (url, options) => {
+    seenSignal = (options && options.signal) || null;
+    return new Promise(() => {});            // deliberately never resolves: the request stays in the air
+  };
+  let threw = null;
+  try { MODULE.apply(ctx); } catch (error) { threw = String((error && error.message) || error); }
+  const styleBefore = document.querySelectorAll('style[data-dct-style]').length;
+  const handleBefore = typeof window.__dshTranslateThis__;
+  for (const d of effects.slice().reverse()) { try { if (typeof d === 'function') d(); } catch { /* the disposer is guarded */ } }
+  window.fetch = realFetch;
+  const styleAfter = document.querySelectorAll('style[data-dct-style]').length;
+  const handleAfter = typeof window.__dshTranslateThis__;
+  const aborted = !!(seenSignal && seenSignal.aborted === true);
+  record('17 · التفكيك لا يترك أثرًا: لا style ولا مقبض تشخيص، والطلب المعلّق يُلغى',
+    threw === null && styleBefore === 1 && styleAfter === 0 && handleBefore === 'object' && handleAfter === 'undefined' && aborted,
+    `applyThrew=${threw} · style ${styleBefore}→${styleAfter} · المقبض ${handleBefore}→${handleAfter} · statusFetchAborted=${aborted} · disposers=${effects.length}`);
+}
+
+/**
+ * 18 — cancel. The layer is given an engine whose batch never settles, so a translation is
+ * provably in flight; then `cancel()` is called and the check asks whether the HOST was told
+ * (the signal the engine received must be aborted) and whether the layer went idle. Before the
+ * fix the signal was never even passed down: cancel raised a generation and dropped the answer
+ * on arrival — the tokens were already spent.
+ */
+async function check18_cancelStopsTheHost() {
+  resetQuiet();
+  const host = document.createElement('div');
+  host.id = 'cx-host';
+  host.innerHTML = '<div id="cx-block"><span>A block cancelled while the engine is still working on it.</span></div>';
+  document.body.append(host);
+  const seen = { signals: [], calls: 0 };
+  const slow = {
+    kind: 'slow',
+    label: 'محرّك بطيء للقياس',
+    translateBatch(texts, options) {
+      seen.calls += 1;
+      const signal = (options && options.signal) || null;
+      seen.signals.push(signal);
+      return new Promise((resolve, reject) => {
+        if (signal && typeof signal.addEventListener === 'function') {
+          signal.addEventListener('abort', () => reject(Object.assign(new Error('أُلغي'), { code: 'ABORTED' })));
+        }
+      });
+    }
+  };
+  const layer2 = MODULE.createLayer({
+    engine: slow,
+    surfaces: [{ id: 'cx', label: 'كتلة', selector: '#cx-block', on: true, trust: 'stable' }],
+    onChange: () => {}
+  });
+  layer2.scanRoots();
+  layer2.translateRoots();
+  const t0 = Date.now();
+  while (Date.now() - t0 < 3000 && layer2.inflight === 0) await wait(20);   // a measured condition, never a guessed sleep
+  const inflightBefore = layer2.inflight;
+  layer2.cancel();
+  await wait(80);
+  const aborted = seen.signals.length > 0 && !!seen.signals[0] && seen.signals[0].aborted === true;
+  const idle = layer2.busy === false;
+  const inflightAfter = layer2.inflight;
+  // …and no red line: the layer must not report the user's own cancel as an engine failure.
+  const redLine = layer2.debug;
+  layer2.dispose();
+  host.remove();
+  record('18 · الإلغاء يوقف نداء المضيف فعلًا (لا توكنات على جواب بلا قارئ)',
+    inflightBefore === 1 && aborted && idle && !redLine,
+    `inflight قبل=${inflightBefore} بعده=${inflightAfter} · نداءات=${seen.calls} · signal=${seen.signals[0] ? 'مُمرَّر' : 'مفقود'} · aborted=${aborted} · الطبقة هادئة=${idle} · سطر الفشل=${redLine ? JSON.stringify(redLine) : 'لا شيء'}`);
+}
+
 function renderResults() {
   muted(() => {
     const tbody = document.querySelector('#results tbody');
@@ -1212,6 +1306,8 @@ async function runAll() {
   await check14_progress();
   await check16_noFrameLeavesWorkQueued();
   await check15_registry();              // last: it builds and disposes a second layer
+  await check17_teardown();              // and these two mount/dispose real wiring as well
+  await check18_cancelStopsTheHost();
   const failed = RESULTS.filter((r) => !r.ok).length;
   muted(() => { document.getElementById('spState').textContent = failed === 0 ? 'كل الفحوص نجحت' : (failed + ' فشل') });
   log('== ' + (RESULTS.length - failed) + '/' + RESULTS.length + ' PASS ==');

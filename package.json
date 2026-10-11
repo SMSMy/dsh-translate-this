@@ -7,10 +7,11 @@
   "scripts": {
     "acceptance": "node acceptance/run.mjs",
     "protocol": "node acceptance/protocol.mjs",
+    "host": "node acceptance/host.mjs",
     "golden": "node acceptance/golden.mjs",
     "creed": "node tools/creed-gate.mjs",
     "glossary": "node tools/glossary-build.mjs",
-    "gates": "node acceptance/protocol.mjs && node tools/creed-gate.mjs && node acceptance/run.mjs"
+    "gates": "node acceptance/protocol.mjs && node acceptance/host.mjs && node tools/creed-gate.mjs && node acceptance/run.mjs"
   },
   "exports": {
     ".": {

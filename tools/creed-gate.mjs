@@ -44,11 +44,21 @@ const description = String(SKILL.description || '')
 const missingWords = LAUNCH_WORDS.filter((word) => !description.toLowerCase().includes(word.toLowerCase()))
 note(missingWords.length === 0,
   'ب · وصف السكيل يحمل كلمات الإطلاق' + (missingWords.length ? ' — ناقص: ' + missingWords.join(', ') : ' (' + LAUNCH_WORDS.length + ' كلمة · ' + description.length + ' حرفًا)'))
-note(SKILL.name === 'translate-this' && description.length <= 500 && String(SKILL.body || '').length > 400,
-  'ب٢ · اسم السكيل وحدود الفهرس والجسم (اسم=' + SKILL.name + ' · وصف=' + description.length + '/500 · جسم=' + String(SKILL.body || '').length + ')')
+note(SKILL.name === 'translate-this' && description.length <= 500 && String(SKILL.content || '').length > 400,
+  'ب٢ · اسم السكيل وحدود الفهرس والجسم (اسم=' + SKILL.name + ' · وصف=' + description.length + '/500 · جسم=' + String(SKILL.content || '').length + ')')
+
+/* (ب٣) the shape the skills SERVICE accepts ---------------------------------------------
+   Measured the hard way: this object used to carry `body`, and `dsh-skill` answered with a
+   skill that registered cleanly and could never be loaded (`content must be a string` on the
+   read path, because `SkillRegistration` = `SkillDefinition` minus two fields, and
+   `SkillDefinition.content` is the body). A rename that only the register call sees is
+   invisible until an agent asks for the skill — so it is checked at build time instead. */
+const skillKeys = Object.keys(SKILL).sort().join(',')
+note(typeof SKILL.content === 'string' && SKILL.content.length > 400 && SKILL.source === 'runtime' && !('body' in SKILL),
+  'ب٣ · شكل السكيل مطابق لعقد الخدمة (مفاتيح=' + skillKeys + ' · content=' + typeof SKILL.content + '/' + String(SKILL.content || '').length + ' · source=' + String(SKILL.source) + ')')
 
 /* (أ٢) the two adaptations are genuinely different texts --------------------------------- */
-const skillText = description + '\n' + String(SKILL.body || '')
+const skillText = description + '\n' + String(SKILL.content || '')
 note(skillText !== engineSingle && !skillText.includes(ENGINE_RULES[0]),
   'ج · الجمهوران نصّان مختلفان (لا نسخة واحدة تُقلَّد للاثنين)')
 
