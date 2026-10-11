@@ -73,6 +73,15 @@
 
 **زرّ «ترجم هذا المحتوى»**: `conversation.session.header.actions` (الأساسي — **مُتحقَّق منه في هذه النسخة**: يستعمله `dsh-undo-savepoint` و`dsh-pocket` المثبَّتان) + **`conversation.input.dock`** (تصحيح: الخطة كانت تقول `conversation.composer.dock` وهذا الاسم **غير موجود** في 0.2.x — الموجود `conversation.input.dock` كما في `dsh-client-ui-git-graph`) + اختصار + قائمة سياق على الرسالة. ولوحة التقدّم لنا: `main` + `sidebar.panellist`.
 
+**مصدر الأسطح (تعديل §3 بعد القياس):** الأساس **فتحات React** لا أسماء الفئات: `conversation.chat.node` و`tool.call.toolview` (كلتاهما مُتحقَّق منهما في حزم مثبَّتة) ⇒ تُعلَن الفتحة عقدةً، ثم نصعد من موضعنا إلى الجدّ الذي يملك النثر فنسِمُه سطحًا. لا اسم فئة ⇒ لا تجزئة تكسره. والمُحدِّدات تبقى **احتياطًا معلنًا** للأسطح التي لا فتحة لنا فيها (لوحات الغير، معاينات الملفات، الإعدادات) وتبقى `verified: false` حتى تُقاس.
+
+**ما قاسه مسبار حيّ على هيكل التطبيق (2026-10-11؛ ملاحظة: متصفّح نظيف يفتح جلسة فارغة):**
+- **اصطلاح التسمية**: `<hash>_<semanticName>` (`BynINW_frame` · `Dc7zOa_composerSeat` · `KuQXFq_message`) ⇒ `[class*="_message_"]` **لا يطابق شيئًا** (شرطة سفلية زائدة)، والصحيح `[class*="_message"]`. قاعدة عامة لكل مُحدِّد نكتبه، وهي تعميم درس `dsh-arabic`.
+- **مؤشّرات غير مُجزَّأة مُتحقَّق منها في DOM الحيّ**: `data-conversation-region/-content/-scroll/-session/-header-*` · `data-composer-seat` · `data-dockkit-pane` · `data-sidebar-right-panel/-session` · `data-dsh-part` · `data-plugin` (211 عنصرًا) · `data-slot` (41) · `data-pal` (12). هذه أَولى بالاعتماد من أي اسم فئة.
+- **أسماء من الحزمة تحتاج تحقّقًا على جلسة محمَّلة**: `*_markdownPayload` · `*_toolCallPayload` · `*_toolCallOnly` · `*_toolChanges` · `*_documentPreview`.
+- **قيد القياس**: غياب حاويات الرسائل في متصفّح نظيف **غياب بنيوي** (جلسة فارغة) لا خطأ مُحدِّد — فلا يُستنتج من صفرٍ في جلسة فارغة أن المُحدِّد خاطئ.
+- **الوصول للواجهة**: كل عميل بلا كوكي يردّ 401 على المستند نفسه؛ النسخ الحديثة تمنح الكوكي فقط من `GET /?token=<launchToken>` (من `ctx.connection.authenticatedUrl` · `randomBytes(32)` · لا يُكتب على القرص · يتغيّر كل تشغيل)، وبروكسي `dsh-pocket` (3081) يضع بوابة رمز أمامها ⇒ القياس إمّا من لوحة البلاقن عند المالك، أو من جلسة مصادَق عليها.
+
 ---
 
 ## 4) دفتر القرارات

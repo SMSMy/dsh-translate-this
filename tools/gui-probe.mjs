@@ -42,15 +42,24 @@ const WAIT = Number(argOf('wait', '6000'))
 const JSON_OUT = argOf('json', null)
 const CHROME = argOf('chrome', defaultChrome())
 
-/** Candidate selectors: the declared ones plus the neighbourhoods they live in. */
+/**
+ * Candidate selectors. Two lessons are baked in here, both measured:
+ *   1. this UI hashes its class names as `<hash>_<semanticName>` (`BynINW_frame`,
+ *      `KuQXFq_message`), so `[class*="_message_"]` with a trailing underscore matches
+ *      NOTHING — the earlier list was wrong in exactly that way;
+ *   2. the shell's own `data-*` markers are the durable ones (`data-conversation-*`,
+ *      `data-dockkit-pane`, `data-sidebar-right-panel`, `data-dsh-part`), because no
+ *      build step renames them.
+ */
 const CANDIDATES = [
-  '[data-dsh-chat-message]', '.dsh-chat-message', '[class*="_message_"]', '[class*="_chat_"]',
-  '[class*="_conversation_"]', '[class*="_bubble_"]', '[class*="_turn_"]',
-  '[data-dsh-tool-result]', '.dsh-tool-call', '[class*="_tool_"]', '[class*="_toolCall_"]',
-  '[data-dsh-document-view]', '.dsh-document', '[class*="_document_"]', '[class*="_preview_"]',
-  '[data-dsh-plugin-panel]', '[class*="panel"]', '[class*="_panel_"]',
-  '[data-dsh-settings]', '[class*="_settings_"]',
-  '[class*="_markdown_"]', '[class*="_prose_"]', 'article', '[role="article"]', 'main', 'pre'
+  '[data-conversation-region]', '[data-conversation-content]', '[data-conversation-scroll]',
+  '[data-conversation-session]', '[data-composer-seat]', '[data-dockkit-pane]',
+  '[data-sidebar-right-panel]', '[data-sidebar-right-session]', '[data-dsh-part]',
+  '[data-plugin]', '[data-slot]', '[data-dsh-plugin]',
+  '[class*="_message"]', '[class*="_markdownPayload"]', '[class*="_toolCallPayload"]',
+  '[class*="_toolCallOnly"]', '[class*="_toolChanges"]', '[class*="_documentPreview"]',
+  '[class*="_composer"]', '[class*="_frame"]', '[class*="_pane_"]',
+  'article', '[role="article"]', 'main', 'pre', 'code', 'textarea', '[contenteditable="true"]'
 ]
 
 const EXPR = `(function () {
