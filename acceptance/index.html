@@ -57,21 +57,21 @@
 </head>
 <body>
 
-<header>
+<header data-dct-ignore>
   <h1>dsh-translate-this — acceptance page</h1>
   <div class="sub">محرّك ثابت · بلا شبكة · لا تستورد DSH ولا أي بلاقن. الطبقة التي تنجو هنا هي التي تُنقل إلى البلاقن.</div>
 </header>
 
 <main>
   <div id="left">
-    <div class="block" id="b1"><span id="b1t">Streaming answer block. It will be rewritten twice after translation.</span></div>
-    <div class="block" id="b2"><span id="b2t">A second block, translated on demand only.</span></div>
-    <div class="block" id="b3"><span id="b3t">https://example.com/path and npx @deepseek-ai/dsh web must stay intact.</span></div>
+    <div class="block" id="b1" data-dct-surface><span id="b1t">Streaming answer block. It will be rewritten twice after translation.</span></div>
+    <div class="block" id="b2" data-dct-surface><span id="b2t">A second block, translated on demand only.</span></div>
+    <div class="block" id="b3" data-dct-surface><span id="b3t">https://example.com/path and npx @deepseek-ai/dsh web must stay intact.</span></div>
 
     <h3 style="font-size:13px;margin:16px 0 6px">A windowed list that recycles rows (like a log panel)</h3>
-    <div class="logwrap" id="logwrap"><div id="login"></div></div>
+    <div class="logwrap" id="logwrap" data-dct-surface><div id="login"></div></div>
 
-    <div style="margin-top:14px">
+    <div style="margin-top:14px" data-dct-ignore>
       <button class="primary" id="runAll">تشغيل الفحوص الأربعة</button>
       <button id="translateAll">ترجم كل الكتل</button>
       <button id="restoreAll">استرجاع الأصل</button>
@@ -81,14 +81,14 @@
       <button id="reset">تصفير</button>
     </div>
 
-    <table id="results" style="margin-top:12px">
+    <table id="results" style="margin-top:12px" data-dct-ignore>
       <thead><tr><th>النتيجة</th><th>الحالة</th><th>القياس</th></tr></thead>
       <tbody></tbody>
     </table>
-    <div id="log" style="margin-top:10px"></div>
+    <div id="log" style="margin-top:10px" data-dct-ignore></div>
   </div>
 
-  <div id="right">
+  <div id="right" data-dct-ignore>
     <b>التشخيص</b>
     <div id="counters" style="margin-top:8px"></div>
     <p class="sub" style="margin-top:12px">ملاحظة: لوحة الحالة أسفل النافذة تُرسم <b>خارج</b> شجرة المحادثة (بوّابة إلى <code>document.body</code>) وموسومة <code>data-dct-ignore</code> — فيجب ألّا تُترجم أبداً.</p>
@@ -149,6 +149,10 @@ function eligible(node) {
   if (text.length < 8) return false;                       // too short to be prose
   const parent = node.parentElement;
   if (!parent) return false;
+  // Surfaces are DECLARED, never assumed: a node is translated only inside a marked
+  // surface. This is what makes a self-feeding loop structurally impossible — the
+  // harness's own instrumentation is outside every surface, with no promise needed.
+  if (!parent.closest('[data-dct-surface]')) return false;
   if (parent.closest(IGNORE)) return false;                // our own surfaces (portals included)
   if (parent.closest('pre, code, textarea, input, [contenteditable="true"]')) return false;
   const style = getComputedStyle(parent);
@@ -176,10 +180,12 @@ function directionHost(node) {
 function inject(node, translation) {
   const source = norm(node.nodeValue || '');
   const key = keyOf(source);
-  node.nodeValue = translation;                            // value only: no structure change
   const host = directionHost(node);
-  if (host) { host.setAttribute(MARK, '1'); host.setAttribute('dir', 'rtl');
-              host.style.unicodeBidi = 'isolate'; }
+  muted(() => {
+    node.nodeValue = translation;                          // value only: no structure change
+    if (host) { host.setAttribute(MARK, '1'); host.setAttribute('dir', 'rtl');
+                host.style.unicodeBidi = 'isolate'; }
+  });
   DCT.records.set(node, { source, translation, key, gen: DCT.gen, host: host || null });
   DCT.counters.injections += 1;
   const since = DCT.counters.englishSince.get(node);
@@ -187,7 +193,8 @@ function inject(node, translation) {
     DCT.counters.flickerMs += now() - since;
     DCT.counters.englishSince.delete(node);
   }
-  renderCounters();
+  guardRate();
+  scheduleCounters();
 }
 
 async function request(node) {
@@ -199,9 +206,9 @@ async function request(node) {
   const hold = DCT.held.get(key);
   if (hold && now() < hold.until) return;                   // we stopped fighting this key
   DCT.counters.requests += 1;
-  renderCounters();
+  scheduleCounters();
   const out = await translate(source);
-  if (gen !== DCT.gen) { DCT.counters.droppedLate += 1; renderCounters(); return; }
+  if (gen !== DCT.gen) { DCT.counters.droppedLate += 1; scheduleCounters(); return; }
   if (!node.isConnected) return;
   if (norm(node.nodeValue || '') !== source) { DCT.counters.droppedLate += 1; return; }
   DCT.cache.set(key, out);
@@ -253,36 +260,51 @@ function flush() {
       if (text && !DCT.records.has(node)) request(node);
     }
   }
-  renderCounters();
+  scheduleCounters();
+}
+
+/* Our own writes are never observed (plan §5 rule 6, the first of the three): the
+   observer is muted around every DOM change this layer makes, and the records it
+   queued meanwhile are dropped with takeRecords(). A flag — never a timeout. */
+let muting = false;
+function muted(fn) {
+  muting = true;
+  try { return fn(); } finally { observer.takeRecords(); muting = false; }
 }
 
 const observer = new MutationObserver((records) => {
-  if (!DCT.enabled) return;
+  if (!DCT.enabled || muting) return;
   for (const r of records) {
     if (r.type === 'characterData') { schedule(r.target); continue; }
     for (const added of r.addedNodes) schedule(added, true);
     if (r.target && r.target.nodeType === 1) schedule(r.target, true);
   }
 });
-observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+/* `?nobs=1` keeps the observer off: it isolates "the page is broken" from "the layer
+   is broken" when a headless run misbehaves — a bisect switch, not a product option. */
+if (!new URLSearchParams(location.search).has('nobs')) {
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+}
 
 /* --------------------------------------------------------------- restore & reset */
 function restoreAll() {
   DCT.gen += 1;                                              // late results are now dead
   DCT.queue.length = 0;
   let restored = 0;
-  for (const [node, rec] of DCT.records) {
-    if (node.isConnected && node.nodeValue === rec.translation) {
-      node.nodeValue = rec.source; restored += 1;
+  muted(() => {
+    for (const [node, rec] of DCT.records) {
+      if (node.isConnected && node.nodeValue === rec.translation) {
+        node.nodeValue = rec.source; restored += 1;
+      }
+      if (rec.host) { rec.host.removeAttribute(MARK); rec.host.removeAttribute('dir');
+                      rec.host.style.unicodeBidi = ''; }
     }
-    if (rec.host) { rec.host.removeAttribute(MARK); rec.host.removeAttribute('dir');
-                    rec.host.style.unicodeBidi = ''; }
-  }
+    document.querySelectorAll('[' + MARK + ']').forEach((el) => {
+      el.removeAttribute(MARK); el.removeAttribute('dir'); el.style.unicodeBidi = ''; });
+  });
   DCT.records.clear();
-  document.querySelectorAll('[' + MARK + ']').forEach((el) => {
-    el.removeAttribute(MARK); el.removeAttribute('dir'); el.style.unicodeBidi = ''; });
   log('restore: ' + restored + ' node(s) back to source');
-  renderCounters();
+  scheduleCounters();
   return restored;
 }
 
@@ -337,8 +359,8 @@ async function check1_streaming() {
   const extraRequests = DCT.counters.requests - before;
   const flicker = Math.round(DCT.counters.flickerMs);
   record('1 · بثّ يعيد كتابة الأصل: العربية تبقى، بلا وميض ٥٠٠ مللي، وبلا حلقة',
-    isArabic && stillArabic && flicker < 500 && DCT.counters.giveUps === 0,
-    `عربية=${isArabic && stillArabic} · وميض=${flicker}ms · طلبات إضافية=${extraRequests} · استسلام=${DCT.counters.giveUps}`);
+    isArabic && stillArabic && flicker < 500 && DCT.counters.giveUps === 0 && !DCT.loopFlag,
+    `عربية=${isArabic && stillArabic} · وميض=${flicker}ms · طلبات إضافية=${extraRequests} · استسلام=${DCT.counters.giveUps} · حلقة=${DCT.loopFlag}`);
 }
 
 async function check2_recycling() {
@@ -399,24 +421,27 @@ async function check4_zeroNetworkAndIgnoreRoot() {
 }
 
 async function check5_guards() {
+  const stage = document.createElement('div');
+  stage.setAttribute('data-dct-surface', '');
   const flexRow = document.createElement('div');
   flexRow.style.display = 'flex';
   const cell = document.createElement('span');
   cell.textContent = 'A flex row cell that must never carry direction';
-  flexRow.append(cell); document.getElementById('left').append(flexRow);
+  flexRow.append(cell); stage.append(flexRow);
+  const code = document.createElement('pre');
+  code.textContent = 'const x = "A code block that must never be translated";';
+  stage.append(code);
+  document.getElementById('left').append(stage);
   await wait(40);
   const before = DCT.counters.requests;
   document.getElementById('translateAll').click();
-  await wait(80);
+  await wait(120);
   const hasDir = flexRow.hasAttribute('dir') || flexRow.hasAttribute(MARK);
-  const code = document.createElement('pre');
-  code.textContent = 'const x = "A code block that must never be translated";';
-  document.getElementById('left').append(code);
-  await wait(60);
   const codeText = code.textContent;
+  const flexTranslated = /[\u0600-\u06FF]/.test(cell.textContent);
   record('5 · المحرّمات: صف flex لا يأخذ اتجاهاً، والكود لا يُترجم',
-    !hasDir && codeText.includes('must never be translated'),
-    `flex أخذ اتجاهاً=${hasDir} · الكود كما هو=${codeText.includes('must never be translated')} · طلبات=${DCT.counters.requests - before}`);
+    !hasDir && codeText.includes('must never be translated') && flexTranslated,
+    `flex أخذ اتجاهاً=${hasDir} · خلية flex تُرجمت=${flexTranslated} · الكود كما هو=${codeText.includes('must never be translated')} · طلبات=${DCT.counters.requests - before}`);
 }
 
 /* --------------------------------------------------------------------- reporting -- */
@@ -439,6 +464,7 @@ function renderCounters() {
     ['طلبات المحرّك', c.requests], ['حقن', c.injections], ['إعادة حقن من الكاش', c.reinjections],
     ['استسلام (حلقة)', c.giveUps], ['نتائج متأخرة مُهمَلة', c.droppedLate],
     ['وميض إنجليزي', Math.round(c.flickerMs) + ' ms'], ['مخالفات شبكة', c.network],
+    ['حلقة مشتبهة', DCT.loopFlag ? 'نعم — أُوقفت الطبقة' : 'لا'],
   ];
   document.getElementById('counters').innerHTML = rows
     .map(([k, v]) => `<div class="kv"><span>${k}</span><b>${v}</b></div>`).join('');
@@ -446,11 +472,32 @@ function renderCounters() {
   document.getElementById('spDone').textContent = String(c.injections);
 }
 
+/* The progress panel must never drive the layer: counters render at most once per
+   frame, and a burst aborts the run instead of freezing the tab. A frozen tab
+   reports nothing — so the loop has to become a visible failure. */
+let countersQueued = false;
+function scheduleCounters() {
+  if (countersQueued) return;
+  countersQueued = true;
+  requestAnimationFrame(() => { countersQueued = false; renderCounters(); });
+}
+function guardRate() {
+  const t = now();
+  DCT.rate = (DCT.rate || []).filter((x) => t - x < 1000);
+  DCT.rate.push(t);
+  if (DCT.rate.length > 300 && !DCT.loopFlag) {
+    DCT.loopFlag = true;
+    DCT.enabled = false;
+    log('LOOP SUSPECTED: أكثر من 300 حقن في ثانية — أُوقفت الطبقة (نتيجة فشل لا تُبتلع).');
+  }
+}
+
 function resetQuiet() {
   restoreAll();
   DCT.counters.requests = 0; DCT.counters.injections = 0; DCT.counters.reinjections = 0;
   DCT.counters.giveUps = 0; DCT.counters.droppedLate = 0; DCT.counters.flickerMs = 0;
   DCT.counters.englishSince.clear(); DCT.held.clear();
+  DCT.loopFlag = false; DCT.rate = []; DCT.enabled = true;
   document.getElementById('log').textContent = '';
   renderCounters();
 }
@@ -499,6 +546,30 @@ document.getElementById('reset').addEventListener('click', () => { resetQuiet();
 buildLog(40);
 renderCounters();
 log('جاهز. اضغط «تشغيل الفحوص الأربعة».');
+
+/* headless gate: `?auto=1` runs everything on load and writes a verdict a CI step can
+   grep — the same page, no test framework, no browser driver beyond a headless run. */
+if (new URLSearchParams(location.search).has('auto')) {
+  window.addEventListener('load', async () => {
+    await wait(60);
+    await runAll();
+    const c = DCT.counters;
+    const verdict = {
+      pass: RESULTS.filter((r) => r.ok).length,
+      total: RESULTS.length,
+      failures: RESULTS.filter((r) => !r.ok).map((r) => r.name),
+      counters: { requests: c.requests, injections: c.injections, reinjections: c.reinjections,
+                  giveUps: c.giveUps, droppedLate: c.droppedLate,
+                  flickerMs: Math.round(c.flickerMs), network: c.network }
+    };
+    const pre = document.createElement('pre');
+    pre.id = 'verdict';
+    pre.setAttribute('data-dct-ignore', '');
+    pre.textContent = 'VERDICT ' + JSON.stringify(verdict);
+    document.body.append(pre);
+    document.title = 'ACCEPTANCE ' + verdict.pass + '/' + verdict.total;
+  });
+}
 </script>
 </body>
 </html>
