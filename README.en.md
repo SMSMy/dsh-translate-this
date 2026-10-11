@@ -4,7 +4,7 @@
 
 Press *Translate this content* and each block is swapped in place as soon as it is ready: answer text, tool output, file previews, and plugin panels (Logcat and friends). No external translation service, no extra API key, and no auto-translating a page you did not ask for.
 
-> **Status: early — before any plugin code.** The first artifact is the **standalone acceptance page** (`acceptance/index.html`): it imports neither DSH nor any plugin, runs on a fixed engine, and proves four outcomes in a real browser before a single line of injection code is written. The full plan is in [PLAN.md](PLAN.md).
+> **Status: 0.5.0 — the injection holds, the engine is not here yet.** The standalone acceptance page (`acceptance/index.html`) closes **5/5** on both scheduling paths (frames and fallback) and in an environment with no frames at all: `node acceptance/run.mjs`. It drives **the plugin's own file** (`lib/client.js`), so there is no second copy to drift. The plugin skeleton exists (`package.json` · `cordis.patch.yml` · `lib/index.js` · `lib/client.js`) with a **fixed, offline stub engine**; `ctx.llm.stream` is 0.6. The full plan is in [PLAN.md](PLAN.md).
 
 ## What it will do
 

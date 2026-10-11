@@ -7,6 +7,12 @@
  * open it, exactly as it would be opened in a review.
  *
  * Run: node acceptance/serve.mjs [--port 19555] [--root <dir>]
+ *
+ * The root matters: the acceptance page loads `../lib/client.js` — the plugin file that
+ * ships — so the server has to span the repository, not just this folder:
+ *   node acceptance/serve.mjs --port 19555 --root .
+ *   → http://127.0.0.1:19555/acceptance/index.html
+ * (Default root is this folder, which is enough only for a page that imports nothing.)
  */
 import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
@@ -37,6 +43,9 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(String(req.url || '/'), 'http://x')
     let pathname = decodeURIComponent(url.pathname)
+    // The browser asks for an icon nobody published. Answering 204 keeps a real 404 out
+    // of the console: a gate that reports "page errors" must not report its own noise.
+    if (pathname === '/favicon.ico') { res.writeHead(204).end(); return }
     if (pathname === '/' || pathname.endsWith('/')) pathname += 'index.html'
     const target = resolve(join(root, pathname))
     // containment: never serve anything outside the root

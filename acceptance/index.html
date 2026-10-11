@@ -13,7 +13,21 @@
     * it simulates the two things that actually break a DOM injector under React:
       (a) the app rewrites the text after we translated it, (b) the app reuses a
       node for a different row;
-    * it prints PASS/FAIL for the four outcomes the 0.5 gate closes on.
+    * it prints PASS/FAIL for the five outcomes the 0.5 gate closes on: the four in
+      PLAN.md §8, plus the guard check (a flex row takes no direction, code is never
+      translated).
+
+  How to run it — `node acceptance/run.mjs` drives a real headless browser over the
+  DevTools protocol and runs the page twice: with frames, and with `?noraf=1` (the
+  fallback scheduler, i.e. what a backgrounded window gets). Both must pass. The older
+  `chrome --dump-dom --virtual-time-budget` route still works but only ever exercises
+  the fallback path — in that mode the renderer never composites and
+  `requestAnimationFrame` never fires at all (measured: 0 frames in 1500 ms), which is
+  why an earlier run could report 0/5 while saying nothing about the layer.
+
+  Switches, for bisecting a failure — not product options:
+    ?nobs=1    never observe the DOM (isolates "the page is broken" from "the layer is")
+    ?noraf=1   never use requestAnimationFrame (exercises the fallback scheduler)
 
   What is *not* here: any model call, any network, any product code. The layer that
   survives this page is what moves into the plugin — not the other way round.
@@ -64,12 +78,15 @@
 
 <main>
   <div id="left">
-    <div class="block" id="b1" data-dct-surface><span id="b1t">Streaming answer block. It will be rewritten twice after translation.</span></div>
-    <div class="block" id="b2" data-dct-surface><span id="b2t">A second block, translated on demand only.</span></div>
-    <div class="block" id="b3" data-dct-surface><span id="b3t">https://example.com/path and npx @deepseek-ai/dsh web must stay intact.</span></div>
+    <!-- No data-dct-surface here on purpose: surfaces are DECLARED to the layer and the
+         layer marks its own roots (PLAN.md §5 rule 8). Writing the attribute by hand
+         would be the page assuming a surface instead of testing the declaration. -->
+    <div class="block" id="b1"><span id="b1t">Streaming answer block. It will be rewritten twice after translation.</span></div>
+    <div class="block" id="b2"><span id="b2t">A second block, translated on demand only.</span></div>
+    <div class="block" id="b3"><span id="b3t">https://example.com/path and npx @deepseek-ai/dsh web must stay intact.</span></div>
 
     <h3 style="font-size:13px;margin:16px 0 6px">A windowed list that recycles rows (like a log panel)</h3>
-    <div class="logwrap" id="logwrap" data-dct-surface><div id="login"></div></div>
+    <div class="logwrap" id="logwrap"><div id="login"></div></div>
 
     <div style="margin-top:14px" data-dct-ignore>
       <button class="primary" id="runAll">تشغيل الفحوص الأربعة</button>
@@ -102,6 +119,17 @@
   <div class="kv"><span>ترجمات</span><b id="spDone">0</b></div>
 </div>
 
+<!-- The shell's contract, in four lines: the GUI defines this loader and then loads the
+     plugin's client bundle. The page does the same, so the layer under test is the file
+     that ships (`../lib/client.js`) rather than a copy of it. `require` is deliberately
+     not implemented: the factory only touches React when `apply()` runs the UI, and this
+     harness drives the layer directly — a harness that drove React would be testing the
+     shell instead of the layer. -->
+<script>
+  window.__ModuleLoader__ = { load: function (definition) { window.__DCT_MODULE__ = definition; } };
+</script>
+<script src="../lib/client.js"></script>
+
 <script>
 /* ------------------------------------------------------------------ stub engine */
 /* Fixed, deterministic, offline. Latency is the only knob — it lets us test a late
@@ -122,192 +150,91 @@ function translate(text) {
   }, delay));
 }
 
-/* --------------------------------------------------------------- the client layer */
-const IGNORE = '[data-dct-ignore]';
-const MARK = 'data-dct-mark';           // our own marker: direction lives in CSS, not inline
-const DCT = {
-  enabled: true,
-  cache: new Map(),                     // key -> translation (content keyed, per plan §6.2)
-  records: new Map(),                   // node -> { source, translation, key, gen }
-  queue: [],
-  held: new Map(),                      // key -> { count, until }  the give-up rule
-  gen: 0,
-  counters: { requests: 0, injections: 0, reinjections: 0, giveUps: 0, droppedLate: 0,
-              flickerMs: 0, englishSince: new Map(), network: 0 },
+/* ------------------------------------------------- the layer (single source) ----
+   This page no longer carries its own copy of the layer. It loads `../lib/client.js`
+   — the file that ships in the plugin — through the same `window.__ModuleLoader__`
+   contract the dsh shell uses, and drives the layer the plugin actually runs.
+
+   Why: two copies drift, and this project has already paid for that lesson once
+   (dsh-arabic shipped months of CSS selectors that could never match, because module
+   hashing rewrites class names and text-level tests never notice). PLAN.md §5 says
+   the code that survives this page is what moves into the plugin — so after the move
+   the page has to test the moved code, not a memory of it.
+
+   Only the engine and the surface table belong to the harness here: the engine is a
+   fixed offline stub (no model call until 0.6), and the surfaces describe this page's
+   fixtures. Everything the checks exercise below is the plugin's own code. */
+const MODULE = window.__DCT_MODULE__
+  ? window.__DCT_MODULE__.factory(() => ({}))   // react is only needed by the UI, which the harness never applies
+  : null;
+
+const TEST_SURFACES = [
+  { id: 'replies',  label: 'الكتل',        selector: '#left .block',              on: true, trust: 'stable' },
+  { id: 'tools',    label: 'قائمة السجلّ', selector: '#logwrap',                  on: true, trust: 'untrusted' },
+  { id: 'settings', label: 'مسرح الفحوص',  selector: '#left > [data-test-stage]', on: true, trust: 'chrome' },
+];
+
+const pageEngine = {
+  kind: 'page-stub',
+  label: 'محرّك ثابت — بلا شبكة',
+  translate: (text) => translate(text),         // the page's deterministic stub, latency knob included
 };
 
-const keyOf = (text) => 'en\u0001ar\u0001stub\u0001v1\u0001' + text;
-const norm = (s) => s.replace(/\s+/g, ' ').trim();
-const now = () => performance.now();
-const log = (msg) => { const el = document.getElementById('log');
-  el.textContent += msg + '\n'; el.scrollTop = el.scrollHeight; };
+const layer = MODULE
+  ? MODULE.createLayer({
+      engine: pageEngine,
+      surfaces: TEST_SURFACES,
+      onChange: () => scheduleCounters(),        // the plugin says when numbers move; we never poll it
+    })
+  : null;
+const INTERNALS = layer ? layer._internals : null;
 
-function eligible(node) {
-  if (!DCT.enabled) return false;
-  if (!node || node.nodeType !== 3) return false;
-  const text = norm(node.nodeValue || '');
-  if (text.length < 8) return false;                       // too short to be prose
-  const parent = node.parentElement;
-  if (!parent) return false;
-  // Surfaces are DECLARED, never assumed: a node is translated only inside a marked
-  // surface. This is what makes a self-feeding loop structurally impossible — the
-  // harness's own instrumentation is outside every surface, with no promise needed.
-  if (!parent.closest('[data-dct-surface]')) return false;
-  if (parent.closest(IGNORE)) return false;                // our own surfaces (portals included)
-  if (parent.closest('pre, code, textarea, input, [contenteditable="true"]')) return false;
-  const style = getComputedStyle(parent);
-  if (style.display === 'none' || style.visibility === 'hidden') return false;
-  return true;
-}
+/* The names the checks below already speak, so the checks stay readable while the
+   layer stays the plugin's. Nothing in here implements translation. */
+const EMPTY = {
+  counters: { requests: 0, injections: 0, reinjections: 0, giveUps: 0, droppedLate: 0,
+              flickerMs: 0, network: 0, englishSince: new Map() },
+  records: new Map(), cache: new Map(), held: new Map(), queue: [], rate: [],
+  gen: 0, enabled: false, loopFlag: false,
+};
+const DCT = layer ? {
+  counters: layer.counters,
+  get records() { return INTERNALS.records }, get cache() { return INTERNALS.cache },
+  get held() { return INTERNALS.held },       get queue() { return INTERNALS.queue },
+  get rate() { return INTERNALS.rate },       set rate(v) { INTERNALS.rate = v },
+  get gen() { return INTERNALS.gen },         set gen(v) { INTERNALS.gen = v },
+  get enabled() { return INTERNALS.enabled }, set enabled(v) { INTERNALS.enabled = v },
+  get loopFlag() { return INTERNALS.loopFlag }, set loopFlag(v) { INTERNALS.loopFlag = v },
+  translateAll: () => layer.translateRoots(),
+  restoreAll: () => layer.restoreAll(),
+  clearCache: () => layer.clearCache(),
+  rescan: () => layer.scanRoots(),
+} : EMPTY;
 
-/* Direction: never a wrapper, never the React parent's structure. We mark the nearest
-   block element that is safe to carry `dir` (no flex/grid: marking those reorders
-   their children) and let one CSS rule do the isolation. */
-function directionHost(node) {
-  let el = node.parentElement;
-  while (el && el !== document.body) {
-    const style = getComputedStyle(el);
-    if (style.display === 'flex' || style.display === 'grid' || style.display === 'inline-flex')
-      return null;
-    if (el.querySelector('button, a, input, select, textarea, [role="button"], [role="radio"]'))
-      return null;
-    if (el.children.length <= 1) return el;
-    el = el.parentElement;
-  }
-  return null;
-}
+const restoreAll = () => (layer ? layer.restoreAll() : 0);
+const rescan = () => { if (layer) layer.scanRoots(); };
 
-function inject(node, translation) {
-  const source = norm(node.nodeValue || '');
-  const key = keyOf(source);
-  const host = directionHost(node);
-  muted(() => {
-    node.nodeValue = translation;                          // value only: no structure change
-    if (host) { host.setAttribute(MARK, '1'); host.setAttribute('dir', 'rtl');
-                host.style.unicodeBidi = 'isolate'; }
-  });
-  DCT.records.set(node, { source, translation, key, gen: DCT.gen, host: host || null });
-  DCT.counters.injections += 1;
-  const since = DCT.counters.englishSince.get(node);
-  if (since !== undefined) {                                // measure the flicker window
-    DCT.counters.flickerMs += now() - since;
-    DCT.counters.englishSince.delete(node);
-  }
-  guardRate();
-  scheduleCounters();
-}
-
-async function request(node) {
-  const source = norm(node.nodeValue || '');
-  const key = keyOf(source);
-  const gen = DCT.gen;
-  const cached = DCT.cache.get(key);
-  if (cached !== undefined) { inject(node, cached); return; }
-  const hold = DCT.held.get(key);
-  if (hold && now() < hold.until) return;                   // we stopped fighting this key
-  DCT.counters.requests += 1;
-  scheduleCounters();
-  const out = await translate(source);
-  if (gen !== DCT.gen) { DCT.counters.droppedLate += 1; scheduleCounters(); return; }
-  if (!node.isConnected) return;
-  if (norm(node.nodeValue || '') !== source) { DCT.counters.droppedLate += 1; return; }
-  DCT.cache.set(key, out);
-  inject(node, out);
-}
-
-function schedule(node, recheck) {
-  if (recheck) { /* an element changed: its text children may need work */ }
-  if (DCT.queue.length < 500 && !DCT.queue.includes(node)) DCT.queue.push(node);
-  if (!DCT.pending) {
-    DCT.pending = true;
-    // not synchronous inside the observer: schedule to the next frame (plan §5 rule 6)
-    requestAnimationFrame(() => { DCT.pending = false; flush(); });
-  }
-  renderCounters();
-}
-
-function flush() {
-  const batch = DCT.queue.splice(0, DCT.queue.length);
-  const seen = new Set();
-  for (const item of batch) {
-    const nodes = item.nodeType === 3 ? [item]
-      : Array.from(item.childNodes).flatMap((c) => c.nodeType === 3 ? [c] : []);
-    for (const node of nodes) {
-      if (seen.has(node) || !eligible(node)) continue;
-      seen.add(node);
-      const text = norm(node.nodeValue || '');
-      const rec = DCT.records.get(node);
-      const cached = DCT.cache.get(keyOf(text));
-      if (cached !== undefined && text !== cached) {        // the app wrote the source back
-        const hold = DCT.held.get(keyOf(text)) || { count: 0, until: 0 };
-        hold.count += 1;
-        if (hold.count > 2) {                                // give up: stable English beats a strobe
-          hold.until = now() + 10000; DCT.held.set(keyOf(text), hold);
-          DCT.counters.giveUps += 1; DCT.cache.delete(keyOf(text));
-        } else {
-          DCT.held.set(keyOf(text), hold);
-          DCT.counters.reinjections += 1;
-          DCT.counters.englishSince.set(node, now());
-          inject(node, cached);                              // re-inject FROM CACHE: no request
-        }
-        continue;
-      }
-      if (rec && text !== rec.translation) {                 // recycled node: drop the record
-        DCT.records.delete(node);
-        if (rec.host) { rec.host.removeAttribute(MARK); rec.host.removeAttribute('dir');
-                        rec.host.style.unicodeBidi = ''; }
-      }
-      if (text && !DCT.records.has(node)) request(node);
-    }
-  }
-  scheduleCounters();
-}
-
-/* Our own writes are never observed (plan §5 rule 6, the first of the three): the
-   observer is muted around every DOM change this layer makes, and the records it
-   queued meanwhile are dropped with takeRecords(). A flag — never a timeout. */
-let muting = false;
-function muted(fn) {
-  muting = true;
-  try { return fn(); } finally { observer.takeRecords(); muting = false; }
-}
-
-const observer = new MutationObserver((records) => {
-  if (!DCT.enabled || muting) return;
-  for (const r of records) {
-    if (r.type === 'characterData') { schedule(r.target); continue; }
-    for (const added of r.addedNodes) schedule(added, true);
-    if (r.target && r.target.nodeType === 1) schedule(r.target, true);
-  }
+/* Harness plumbing. `muted` is deliberately a NO-OP here: every write this page makes
+   lands inside a `data-dct-ignore` region — results table, log, counters panel, status
+   panel, verdict line — and the plugin's rule 3 skips those structurally. Keeping the
+   call sites is the point: if that structural skip ever breaks, our own writes start
+   feeding the observer and the counter panel walks into exactly the loop this gate was
+   built to catch. The page notices, instead of the user. */
+const muted = (fn) => fn();
+const MARK = 'data-dct-mark';                    // must agree with the plugin's marker
+const log = (msg) => muted(() => {                // the page's own log pane (inside data-dct-ignore)
+  const el = document.getElementById('log');
+  el.textContent += msg + '\n';
+  el.scrollTop = el.scrollHeight;
 });
-/* `?nobs=1` keeps the observer off: it isolates "the page is broken" from "the layer
-   is broken" when a headless run misbehaves — a bisect switch, not a product option. */
-if (!new URLSearchParams(location.search).has('nobs')) {
-  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-}
-
-/* --------------------------------------------------------------- restore & reset */
-function restoreAll() {
-  DCT.gen += 1;                                              // late results are now dead
-  DCT.queue.length = 0;
-  let restored = 0;
-  muted(() => {
-    for (const [node, rec] of DCT.records) {
-      if (node.isConnected && node.nodeValue === rec.translation) {
-        node.nodeValue = rec.source; restored += 1;
-      }
-      if (rec.host) { rec.host.removeAttribute(MARK); rec.host.removeAttribute('dir');
-                      rec.host.style.unicodeBidi = ''; }
-    }
-    document.querySelectorAll('[' + MARK + ']').forEach((el) => {
-      el.removeAttribute(MARK); el.removeAttribute('dir'); el.style.unicodeBidi = ''; });
-  });
-  DCT.records.clear();
-  log('restore: ' + restored + ' node(s) back to source');
-  scheduleCounters();
-  return restored;
-}
-
+const nextFrame = (fn) => {                       // the layer's pump, mirrored for the panel
+  let done = false;
+  const run = () => { if (!done) { done = true; fn(); } };
+  const timer = setTimeout(run, 32);
+  if (!new URLSearchParams(location.search).has('noraf'))
+    requestAnimationFrame(() => { clearTimeout(timer); run(); });
+  return timer;
+};
 /* ------------------------------------------------------------------ the harness ---- */
 /* A React-like re-renderer: `paint` either updates the existing text node's value or
    replaces the node outright — both happen in real React. */
@@ -371,7 +298,10 @@ async function check2_recycling() {
   await wait(80);
   const rows = () => Array.from(document.querySelectorAll('#login .row'));
   const first = rows()[0];
-  const firstBody = first.lastChild;
+  // The row's body is a span; the *text* is its first child. Reading `lastChild` here
+  // (the span itself) made `nodeValue` null and turned the recycle write into a no-op
+  // on an element — the check then measured a node nothing had touched.
+  const firstBody = first.lastChild.firstChild;
   const translated = firstBody.nodeValue;
   const wasArabic = /[\u0600-\u06FF]/.test(translated || '');
   // recycle: the SAME node now carries a different row's text (as a windowed list does)
@@ -380,7 +310,7 @@ async function check2_recycling() {
   const nowText = firstBody.nodeValue;
   const leaked = nowText === translated;
   const restored = restoreAll();
-  const verbatim = rows()[0].lastChild.nodeValue === 'log line 999: a different row reusing this node';
+  const verbatim = rows()[0].lastChild.firstChild.nodeValue === 'log line 999: a different row reusing this node';
   record('2 · إعادة تدوير العقدة: لا ترجمة قديمة، والاسترجاع حرفي',
     wasArabic && !leaked && verbatim,
     `كانت عربية=${wasArabic} · تسرّبت القديمة=${leaked} · استُرجع حرفياً=${verbatim} · عُقد=${restored}`);
@@ -406,23 +336,41 @@ async function check3_lateResult() {
 
 async function check4_zeroNetworkAndIgnoreRoot() {
   resetQuiet();
-  const external = performance.getEntriesByType('resource')
-    .filter((e) => !e.name.startsWith('file:') && !e.name.startsWith('blob:'));
+  // "Zero network" is a claim about what THIS PAGE causes. A browser extension or the
+  // favicon can contribute resource entries that have nothing to do with us (measured:
+  // AdGuard injects two, plus Chrome's own /favicon.ico — three entries on a page that
+  // fetches nothing). So we snapshot the list first and assert that translating adds
+  // nothing to it; our own fetch/XHR wrappers cover the rest.
+  const seenAtStart = performance.getEntriesByType('resource').map((e) => e.name);
+  // The panel ALREADY carries Arabic of its own (its labels are Arabic), and its
+  // counter fields are written by us on purpose. So neither "no Arabic inside it" nor
+  // "byte-identical textContent" says anything: the first fails on the panel's own
+  // language, the second on our own counter updates. The claim is narrower and exact —
+  // the LAYER never took a text node in there: nothing recorded, no direction mark,
+  // and the labels themselves survive verbatim.
+  const panel = document.getElementById('statusPanel');
+  const labels = () => Array.from(panel.querySelectorAll('.kv > span')).map((s) => s.textContent).join('|');
+  const beforeLabels = labels();
   // translate everything, INCLUDING the portaled panel's subtree (it is marked)
   document.getElementById('translateAll').click();
   await wait(140);
-  const panel = document.getElementById('statusPanel');
-  const panelUntouched = !/[\u0600-\u06FF]/.test(
-    Array.from(panel.querySelectorAll(':not([data-dct-ignore])')).map((n) => n.textContent).join(''));
+  const fresh = performance.getEntriesByType('resource').filter((e) => !seenAtStart.includes(e.name));
+  const panelTextNodes = [];
+  (function walk(n) {
+    for (const c of n.childNodes) { if (c.nodeType === 3) panelTextNodes.push(c); else walk(c) }
+  })(panel);
+  const recorded = panelTextNodes.filter((n) => DCT.records.has(n)).length;
   const marked = panel.hasAttribute('data-dct-ignore') && panel.parentElement === document.body;
+  const panelUntouched = recorded === 0 &&
+    panel.querySelectorAll('[' + MARK + ']').length === 0 && beforeLabels === labels();
   record('4 · صفر شبكة · ولوحة الحالة (بوّابة إلى body) لا تُترجم',
-    external.length === 0 && DCT.counters.network === 0 && panelUntouched && marked,
-    `طلبات خارجية=${external.length} · اعتراضات الشبكة=${DCT.counters.network} · اللوحة سليمة=${panelUntouched} · موسومة ومُبوَّبة=${marked}`);
+    fresh.length === 0 && DCT.counters.network === 0 && panelUntouched && marked,
+    `طلبات جديدة=${fresh.length}${fresh.length ? ' [' + fresh.map((e) => e.name.slice(0, 48)).join(' | ') + ']' : ''} · اعتراضات الشبكة=${DCT.counters.network} · عقد مرصودة داخل اللوحة=${recorded} · تسميات سليمة=${beforeLabels === labels()} · موسومة ومُبوَّبة=${marked} · سابقة للقياس=${seenAtStart.length}`);
 }
 
 async function check5_guards() {
   const stage = document.createElement('div');
-  stage.setAttribute('data-dct-surface', '');
+  stage.setAttribute('data-test-stage', '');   // declared as a surface for this page; the layer marks it
   const flexRow = document.createElement('div');
   flexRow.style.display = 'flex';
   const cell = document.createElement('span');
@@ -432,6 +380,7 @@ async function check5_guards() {
   code.textContent = 'const x = "A code block that must never be translated";';
   stage.append(code);
   document.getElementById('left').append(stage);
+  rescan();
   await wait(40);
   const before = DCT.counters.requests;
   document.getElementById('translateAll').click();
@@ -446,72 +395,82 @@ async function check5_guards() {
 
 /* --------------------------------------------------------------------- reporting -- */
 function renderResults() {
-  const tbody = document.querySelector('#results tbody');
-  tbody.textContent = '';
-  for (const r of RESULTS) {
-    const tr = document.createElement('tr');
-    const a = document.createElement('td'); a.textContent = r.name;
-    const b = document.createElement('td'); b.className = r.ok ? 'pass' : 'fail';
-    b.textContent = r.ok ? 'PASS' : 'FAIL';
-    const c = document.createElement('td'); c.textContent = r.detail || '';
-    tr.append(a, b, c); tbody.append(tr);
-  }
+  muted(() => {
+    const tbody = document.querySelector('#results tbody');
+    tbody.textContent = '';
+    for (const r of RESULTS) {
+      const tr = document.createElement('tr');
+      const a = document.createElement('td'); a.textContent = r.name;
+      const b = document.createElement('td'); b.className = r.ok ? 'pass' : 'fail';
+      b.textContent = r.ok ? 'PASS' : 'FAIL';
+      const c = document.createElement('td'); c.textContent = r.detail || '';
+      tr.append(a, b, c); tbody.append(tr);
+    }
+  });
 }
 
 function renderCounters() {
-  const c = DCT.counters;
-  const rows = [
-    ['طلبات المحرّك', c.requests], ['حقن', c.injections], ['إعادة حقن من الكاش', c.reinjections],
-    ['استسلام (حلقة)', c.giveUps], ['نتائج متأخرة مُهمَلة', c.droppedLate],
-    ['وميض إنجليزي', Math.round(c.flickerMs) + ' ms'], ['مخالفات شبكة', c.network],
-    ['حلقة مشتبهة', DCT.loopFlag ? 'نعم — أُوقفت الطبقة' : 'لا'],
-  ];
-  document.getElementById('counters').innerHTML = rows
-    .map(([k, v]) => `<div class="kv"><span>${k}</span><b>${v}</b></div>`).join('');
-  document.getElementById('spQueue').textContent = String(DCT.queue.length);
-  document.getElementById('spDone').textContent = String(c.injections);
+  muted(() => {
+    const c = DCT.counters;
+    const rows = [
+      ['طلبات المحرّك', c.requests], ['حقن', c.injections], ['إعادة حقن من الكاش', c.reinjections],
+      ['استسلام (حلقة)', c.giveUps], ['نتائج متأخرة مُهمَلة', c.droppedLate],
+      ['وميض إنجليزي', Math.round(c.flickerMs) + ' ms'], ['مخالفات شبكة', c.network],
+      ['حلقة مشتبهة', DCT.loopFlag ? 'نعم — أُوقفت الطبقة' : 'لا'],
+    ];
+    document.getElementById('counters').innerHTML = rows
+      .map(([k, v]) => `<div class="kv"><span>${k}</span><b>${v}</b></div>`).join('');
+    document.getElementById('spQueue').textContent = String(DCT.queue.length);
+    document.getElementById('spDone').textContent = String(c.injections);
+  });
 }
 
 /* The progress panel must never drive the layer: counters render at most once per
-   frame, and a burst aborts the run instead of freezing the tab. A frozen tab
-   reports nothing — so the loop has to become a visible failure. */
+   frame, and the layer's own burst guard turns a loop into a visible failure
+   (`layer.loopFlag`) instead of a frozen tab. A frozen tab reports nothing — so the
+   loop has to become a visible failure, and that guard lives in the plugin now, not
+   here: this page only reads it. */
 let countersQueued = false;
 function scheduleCounters() {
   if (countersQueued) return;
   countersQueued = true;
-  requestAnimationFrame(() => { countersQueued = false; renderCounters(); });
-}
-function guardRate() {
-  const t = now();
-  DCT.rate = (DCT.rate || []).filter((x) => t - x < 1000);
-  DCT.rate.push(t);
-  if (DCT.rate.length > 300 && !DCT.loopFlag) {
-    DCT.loopFlag = true;
-    DCT.enabled = false;
-    log('LOOP SUSPECTED: أكثر من 300 حقن في ثانية — أُوقفت الطبقة (نتيجة فشل لا تُبتلع).');
-  }
+  nextFrame(() => { countersQueued = false; renderCounters(); });
 }
 
 function resetQuiet() {
   restoreAll();
+  // Each check starts from an EMPTY cache: a key warmed by an earlier check turns a
+  // "the engine is called" check into a cache hit, and the check then measures nothing
+  // (measured: check 3 reported 0 dropped late results because b2t was already cached).
+  DCT.cache.clear();
   DCT.counters.requests = 0; DCT.counters.injections = 0; DCT.counters.reinjections = 0;
   DCT.counters.giveUps = 0; DCT.counters.droppedLate = 0; DCT.counters.flickerMs = 0;
   DCT.counters.englishSince.clear(); DCT.held.clear();
   DCT.loopFlag = false; DCT.rate = []; DCT.enabled = true;
-  document.getElementById('log').textContent = '';
+  muted(() => { document.getElementById('log').textContent = '' });
+  rescan();                                  // fixtures may be new since the last scan
   renderCounters();
 }
 
 async function runAll() {
   RESULTS.length = 0; renderResults();
-  document.getElementById('spState').textContent = 'يجرى…';
+  muted(() => { document.getElementById('spState').textContent = 'يجرى…' });
+  if (!MODULE) {
+    // A gate that cannot load the code under test must FAIL, loudly and by name — never
+    // report a score for a page that measured nothing. This is what "no silent no-op"
+    // means when it is the harness itself that broke.
+    record('0 · تحميل lib/client.js', false,
+      'الوحدة لم تُحمَّل: الصفحة لا تقيس الطبقة إطلاقًا. تأكد أن الخادم يعمل بجذر المستودع (../lib/client.js يجب أن يكون داخل الجذر).');
+    window.__ACCEPTANCE__ = { results: RESULTS.slice(), counters: { requests: 0, injections: 0, reinjections: 0, giveUps: 0, droppedLate: 0, flickerMs: 0, network: 0 } };
+    return;
+  }
   await check1_streaming();
   await check2_recycling();
   await check3_lateResult();
   await check4_zeroNetworkAndIgnoreRoot();
   await check5_guards();
   const failed = RESULTS.filter((r) => !r.ok).length;
-  document.getElementById('spState').textContent = failed === 0 ? 'كل الفحوص نجحت' : (failed + ' فشل');
+  muted(() => { document.getElementById('spState').textContent = failed === 0 ? 'كل الفحوص نجحت' : (failed + ' فشل') });
   log('== ' + (RESULTS.length - failed) + '/' + RESULTS.length + ' PASS ==');
   window.__ACCEPTANCE__ = { results: RESULTS.slice(), counters: { ...DCT.counters } };
 }
@@ -525,7 +484,8 @@ window.XMLHttpRequest = function () { DCT.counters.network += 1; renderCounters(
 /* wiring */
 document.getElementById('runAll').addEventListener('click', runAll);
 document.getElementById('translateAll').addEventListener('click', () => {
-  document.querySelectorAll('#left .block > span').forEach((s) => schedule(s, true));
+  rescan();              // surfaces are declared and then marked: rescan before asking
+  DCT.translateAll();    // the plugin's own on-demand entry point — nothing translates before this
 });
 document.getElementById('restoreAll').addEventListener('click', () => restoreAll());
 document.getElementById('streamBatches').addEventListener('click', async () => {
@@ -535,7 +495,9 @@ document.getElementById('streamBatches').addEventListener('click', async () => {
 });
 document.getElementById('recycle').addEventListener('click', () => {
   const rows = document.querySelectorAll('#login .row');
-  if (rows.length > 1) rows[0].lastChild.nodeValue = 'log line 999: a different row reusing this node';
+  // `.lastChild` is the body SPAN; the text node is its first child. Writing nodeValue
+  // on an element is a no-op — an earlier version of this button "recycled" nothing.
+  if (rows.length > 1) rows[0].lastChild.firstChild.nodeValue = 'log line 999: a different row reusing this node';
 });
 document.getElementById('lateCall').addEventListener('click', async () => {
   ENGINE.latency = 400; document.getElementById('translateAll').click();
@@ -566,7 +528,7 @@ if (new URLSearchParams(location.search).has('auto')) {
     pre.id = 'verdict';
     pre.setAttribute('data-dct-ignore', '');
     pre.textContent = 'VERDICT ' + JSON.stringify(verdict);
-    document.body.append(pre);
+    muted(() => { document.body.append(pre) });
     document.title = 'ACCEPTANCE ' + verdict.pass + '/' + verdict.total;
   });
 }

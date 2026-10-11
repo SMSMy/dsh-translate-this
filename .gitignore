@@ -7,6 +7,9 @@ node_modules/
 # local session handoff (paths, environment notes) — never published
 HANDOFF.md
 
+# acceptance screenshots: evidence produced by `node acceptance/run.mjs --shots`, never shipped
+acceptance/shots/
+
 # OS noise
 .DS_Store
 Thumbs.db
