@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<!--
+  Translate This — Modern Craft Edition
+  يدعم RTL و LTR تلقائياً أو عبر مبدّل تجريبي.
+  يحافظ على نفس الهندسة، الفئات الأصلية (dct-*)، وكافة الحُرّاس (Progress, Counters, Surfaces, Actions).
+-->
+<html lang="ar" dir="rtl" id="root-html">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Translate This — Artisan UI</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* Theme Tokens - refined, native feel */
+    --bg-page: light-dark(#f8fafc, #0a0b0e);
+    --text-primary: light-dark(#0f172a, #f1f5f9);
+    --text-secondary: light-dark(#475569, #94a3b8);
+    --text-tertiary: light-dark(#94a3b8, #64748b);
+    
+    --card-bg: light-dark(rgba(255, 255, 255, 0.94), rgba(18, 20, 26, 0.92));
+    --card-border: light-dark(rgba(226, 232, 240, 0.9), rgba(255, 255, 255, 0.08));
+    --card-shadow: light-dark(0 20px 45px -10px rgba(15, 23, 42, 0.12), 0 25px 50px -12px rgba(0, 0, 0, 0.65));
+    
+    --subtle-bg: light-dark(rgba(241, 245, 249, 0.7), rgba(255, 255, 255, 0.03));
+    --subtle-border: light-dark(rgba(203, 213, 225, 0.5), rgba(255, 255, 255, 0.06));
+    
+    --accent: light-dark(#2563eb, #3b82f6);
+    --accent-hover: light-dark(#1d4ed8, #2563eb);
+    --accent-glow: light-dark(rgba(37, 99, 235, 0.16), rgba(59, 130, 246, 0.25));
+    --accent-text: #ffffff;
+    
+    --warn-bg: light-dark(#fffbeb, rgba(245, 158, 11, 0.08));
+    --warn-border: light-dark(#fef3c7, rgba(245, 158, 11, 0.2));
+    --warn-text: light-dark(#b45309, #fbbf24);
+    
+    --bad-bg: light-dark(#fef2f2, rgba(239, 68, 68, 0.08));
+    --bad-border: light-dark(#fee2e2, rgba(239, 68, 68, 0.2));
+    --bad-text: light-dark(#b91c1c, #f87171);
+
+    --success-bg: light-dark(#f0fdf4, rgba(34, 197, 94, 0.08));
+    --success-border: light-dark(#dcfce7, rgba(34, 197, 94, 0.2));
+    --success-text: light-dark(#15803d, #4ade80);
+
+    --radius-lg: 16px;
+    --radius-md: 10px;
+    --radius-sm: 6px;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--bg-page);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    padding: 32px 24px;
+  }
+
+  .stage-header {
+    max-width: 680px;
+    margin: 0 auto 28px;
+  }
+  .stage-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0 0 6px;
+    letter-spacing: -0.01em;
+  }
+  .stage-desc {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin: 0 0 16px;
+  }
+
+  /* Control bar outside panel for testing */
+  .preview-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+    max-width: 680px;
+    margin: 0 auto 32px;
+  }
+  .toolbar-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+    margin-inline-end: 4px;
+  }
+  .preview-btn {
+    border: 1px solid var(--subtle-border);
+    background: var(--subtle-bg);
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .preview-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .preview-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  /* =====================================================================
+     TRANSLATE THIS PANEL — STYLES
+     ===================================================================== */
+
+  .dct-panel {
+    position: fixed;
+    inset-block-start: 60px;
+    inset-inline-end: 24px;
+    z-index: 999998;
+    width: min(420px, 94vw);
+    max-height: 84vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: var(--card-bg);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    color: var(--text-primary);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--card-shadow);
+    padding: 18px 20px;
+    text-align: start;
+    transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Embedded variant */
+  .dct-panel.dct-embedded {
+    position: static;
+    inset: auto;
+    width: auto;
+    max-height: none;
+    box-shadow: none;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    padding: 16px;
+    backdrop-filter: none;
+  }
+
+  /* Header inside panel */
+  .dct-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    gap: 10px;
+  }
+  .dct-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dct-brand-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: var(--accent-glow);
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .dct-title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+  }
+  .dct-note {
+    font-size: 11.5px;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+  }
+  .dct-badge-model {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--subtle-bg);
+    border: 1px solid var(--subtle-border);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10.5px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+  }
+
+  /* ---------- L1: PRIMARY ACTION & LANGUAGE ---------- */
+  .dct-bar {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    align-items: stretch;
+    margin-bottom: 12px;
+  }
+
+  .dct-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 38px;
+    padding: 0 16px;
+    background: var(--accent);
+    color: var(--accent-text);
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 2px 8px var(--accent-glow);
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .dct-primary:hover {
+    background: var(--accent-hover);
+    transform: translateY(-0.5px);
+  }
+  .dct-primary:active {
+    transform: translateY(0);
+  }
+
+  .dct-lang-box {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--subtle-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    padding: 2px 8px 2px 10px;
+    transition: border-color 0.15s ease;
+  }
+  .dct-lang-box:hover, .dct-lang-box:focus-within {
+    border-color: var(--accent);
+  }
+  .dct-lang-box label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    user-select: none;
+  }
+  .dct-select {
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 4px 2px;
+    cursor: pointer;
+    outline: none;
+  }
+
+  /* ---------- L2: SINGLE-LINE STATUS WITH VIBRANT FEEDBACK ---------- */
+  .dct-status {
+    min-height: 34px;
+    padding: 6px 12px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    border: 1px solid transparent;
+    transition: all 0.2s ease;
+  }
+
+  /* State styles for L2 */
+  .state-idle .dct-status {
+    background: var(--subtle-bg);
+    border-color: var(--subtle-border);
+    color: var(--text-secondary);
+  }
+  .state-working .dct-status {
+    background: var(--warn-bg);
+    border-color: var(--warn-border);
+    color: var(--warn-text);
+  }
+  .state-done .dct-status {
+    background: var(--success-bg);
+    border-color: var(--success-border);
+    color: var(--success-text);
+  }
+  .state-fail .dct-status {
+    background: var(--bad-bg);
+    border-color: var(--bad-border);
+    color: var(--bad-text);
+  }
+
+  .dct-status .grow { flex: 1; }
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .state-idle .status-dot { background: var(--text-tertiary); }
+  .state-working .status-dot { background: var(--warn-text); animation: pulse-dot 1.2s infinite ease-in-out; }
+  .state-done .status-dot { background: var(--success-text); }
+  .state-fail .status-dot { background: var(--bad-text); }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+  }
+
+  /* Progress count tags inside working state */
+  .dct-metrics-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+
+  /* ---------- L3: EXPANDABLE DETAILS & METRICS ---------- */
+  .dct-more {
+    border-top: 1px solid var(--card-border);
+    padding-top: 10px;
+    margin-top: 6px;
+  }
+  .dct-more > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    user-select: none;
+    padding: 6px 4px;
+    border-radius: var(--radius-sm);
+    transition: color 0.15s ease;
+  }
+  .dct-more > summary:hover {
+    color: var(--text-primary);
+  }
+  .dct-more > summary::-webkit-details-marker { display: none; }
+  .dct-more-toggle-icon {
+    display: inline-flex;
+    align-items: center;
+    transition: transform 0.2s ease;
+  }
+  .dct-more[open] .dct-more-toggle-icon {
+    transform: rotate(180deg);
+  }
+
+  /* Details Sub-Sections */
+  .dct-sec {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: var(--subtle-bg);
+    border: 1px solid var(--subtle-border);
+    border-radius: var(--radius-md);
+  }
+  .dct-sec-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  /* Performance Grid for 14 Counters */
+  .dct-counter-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px 12px;
+  }
+  .dct-kv {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11.5px;
+    padding: 3px 0;
+  }
+  .dct-kv span {
+    color: var(--text-secondary);
+  }
+  .dct-kv b {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Surfaces Table / Rows */
+  .dct-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 5px 0;
+    border-top: 1px dashed var(--subtle-border);
+    font-size: 12px;
+  }
+  .dct-row:first-of-type {
+    border-top: none;
+  }
+  .dct-row label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+    font-weight: 500;
+  }
+  .dct-row input[type="checkbox"] {
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .dct-row-val {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  /* Generic Button styles (dct-btn) */
+  .dct-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--subtle-border);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .dct-btn:hover {
+    border-color: var(--card-border);
+    background: var(--subtle-bg);
+    transform: translateY(-0.5px);
+  }
+  .dct-btn.dct-mini {
+    height: 22px;
+    padding: 0 8px;
+    font-size: 10.5px;
+    border-radius: 5px;
+  }
+  .dct-btn.dct-icon {
+    width: 28px;
+    padding: 0;
+  }
+  .dct-btn[data-on] {
+    background: var(--accent-glow);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* Diagnostics code pills */
+  .dct-tech-line {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    background: var(--subtle-bg);
+    border: 1px solid var(--subtle-border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    margin-top: 6px;
+    user-select: all;
+    word-break: break-all;
+    direction: ltr; /* Always LTR for technical probes */
+    text-align: left;
+  }
+
+  /* Spinner */
+  .dct-spin {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: dct-rot 0.75s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes dct-rot { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .dct-spin { animation-duration: 2s; } }
+
+  /* State filters: hide inapplicable status fragments */
+  .state-idle   .only-working, .state-idle   .only-done, .state-idle   .only-fail { display: none !important; }
+  .state-working .only-idle,   .state-working .only-done, .state-working .only-fail { display: none !important; }
+  .state-done    .only-idle,   .state-done    .only-working, .state-done .only-fail { display: none !important; }
+  .state-fail    .only-idle,   .state-fail    .only-working, .state-fail .only-done { display: none !important; }
+
+  /* Bidirectional / RTL / LTR layout adjustments */
+  [dir="ltr"] .dct-tech-line { text-align: left; }
+  [dir="rtl"] .dct-tech-line { text-align: left; } /* Probes always readable in left-aligned mono */
+</style>
+</head>
+<body>
+
+<div class="stage-header">
+  <h1 class="stage-title">Translate This — لوحة ترجمة المحتوى (Modern Artisan)</h1>
+  <p class="stage-desc">
+    تصميم متقن عالي البداهة، صُمم خصيصاً ليتناسب مع البيئات الحديثة، ويدعم كلا الاتجاهين RTL و LTR بمرونة طبيعية، مع الالتزام التام بجميع الحراس والأسماء البرمجية.
+  </p>
+
+  <!-- Interactive Control Bar -->
+  <div class="preview-toolbar">
+    <span class="toolbar-label">الحالة (State):</span>
+    <button class="preview-btn" onclick="setState('idle')">خامل (Idle)</button>
+    <button class="preview-btn active" id="btn-working" onclick="setState('working')">يعمل (Working)</button>
+    <button class="preview-btn" onclick="setState('done')">نجح (Done)</button>
+    <button class="preview-btn" onclick="setState('fail')">فشل (Fail)</button>
+    
+    <span class="toolbar-label" style="margin-inline-start: 12px;">الاتجاه (Direction):</span>
+    <button class="preview-btn active" id="btn-rtl" onclick="setDirection('rtl')">RTL (عربي)</button>
+    <button class="preview-btn" id="btn-ltr" onclick="setDirection('ltr')">LTR (English)</button>
+    
+    <button class="preview-btn" style="margin-inline-start: auto; background: var(--accent); color: white;" onclick="openPanel()">إعادة فتح اللوحة</button>
+  </div>
+</div>
+
+<!-- ======================= اللوحة الأساسية ======================= -->
+<div class="dct-panel state-working" id="panel" aria-label="ترجمة المحتوى — Translate This">
+
+  <!-- Header / Meta -->
+  <div class="dct-header-row">
+    <div class="dct-brand">
+      <div class="dct-brand-icon">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="2" y1="12" x2="22" y2="12"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+      </div>
+      <div>
+        <h2 class="dct-title" id="txt-title">ترجمة المحتوى</h2>
+      </div>
+    </div>
+    
+    <!-- data: engine.label -->
+    <div class="dct-badge-model" title="محرك الذكاء الاصطناعي الحالي">
+      <span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent)"></span>
+      <span>DSH · deepseek-flash</span>
+    </div>
+
+    <!-- Close button for direct UX -->
+    <button class="dct-btn dct-icon" style="border:none;background:transparent;color:var(--text-tertiary)" onclick="closePanel()" title="إغلاق اللوحة (Esc)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+      </svg>
+    </button>
+  </div>
+
+  <!-- ---------- L1: Primary Action & Language ---------- -->
+  <div class="dct-bar">
+    <!-- data: action = layer.translateRoots() / layer.restoreAll() -->
+    <button class="dct-btn dct-primary" id="primary">
+      <span class="dct-glyph">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m5 8 6 6"/>
+          <path d="m4 14 6-6 2-3"/>
+          <path d="M2 5h12"/>
+          <path d="M7 2h1"/>
+          <path d="m22 22-5-10-5 10"/>
+          <path d="M14 18h6"/>
+        </svg>
+      </span>
+      <span class="only-idle only-done" id="txt-action">ترجم هذا المحتوى</span>
+      <span class="only-working" id="txt-working-action">جارٍ الترجمة… <span class="dct-spin" style="margin-inline-start:4px"></span></span>
+      <span class="only-fail" id="txt-retry-action">إعادة المحاولة</span>
+    </button>
+
+    <!-- data: layer.target (ar · en · fr · zh · tr) -->
+    <div class="dct-lang-box">
+      <label for="lang" id="lbl-lang">إلى</label>
+      <select class="dct-select" id="lang" onchange="onLanguageChange(this.value)">
+        <option value="ar" selected>العربية (Arabic)</option>
+        <option value="en">English (US)</option>
+        <option value="fr">Français (French)</option>
+        <option value="zh">中文 (Chinese)</option>
+        <option value="tr">Türkçe (Turkish)</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- ---------- L2: Responsive Single-Line Status ---------- -->
+  <div class="dct-status">
+    <span class="status-dot"></span>
+
+    <!-- Idle state -->
+    <span class="dct-note only-idle grow" id="txt-idle-desc">جاهز — لا توجد مهام ترجمة جارية حالياً.</span>
+
+    <!-- Working state with strictly preserved alive progress numbers -->
+    <!-- data: progress.inflight · progress.queued · progress.attrsQueued -->
+    <div class="dct-metrics-pill only-working grow">
+      <span>جارٍ: <b style="color:var(--text-primary)">2</b></span>
+      <span style="opacity:0.4">·</span>
+      <span>في الطابور: <b style="color:var(--text-primary)">5</b></span>
+      <span style="opacity:0.4">·</span>
+      <span>سمات: <b style="color:var(--text-primary)">3</b></span>
+    </div>
+
+    <!-- Done state with counters preview -->
+    <!-- data: counters.requests · counters.injections · counters.tokensIn/out -->
+    <span class="dct-note only-done grow" style="color:var(--success-text);font-weight:500;">
+      تمّ بنجاح: 4 نداءات · 12 حقنة · توكنات 198/59
+    </span>
+
+    <!-- Fail state (layer.debug) -->
+    <!-- data: layer.debug -->
+    <span class="dct-bad only-fail grow" style="font-size:11.5px;">
+      فشل المحرّك (RATE_LIMIT): تجاوزت الحدّ المسموح — أعد المحاولة
+    </span>
+  </div>
+
+  <!-- ---------- L3: Clean Collapsible Diagnostics & Controls ---------- -->
+  <details class="dct-more" open>
+    <summary>
+      <span id="txt-more-summary">التفاصيل والعدّادات الميدانية</span>
+      <span class="dct-more-toggle-icon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </span>
+    </summary>
+
+    <!-- data: counters.* (All 14 performance counters in crisp grid) -->
+    <div class="dct-sec">
+      <div class="dct-sec-title">
+        <span id="txt-metrics-title">مؤشرات الأداء والكاش</span>
+        <span class="dct-badge-model" style="font-size:9.5px;padding:1px 6px;">LIVE</span>
+      </div>
+      <div class="dct-counter-grid">
+        <div class="dct-kv"><span>نداءات المحرّك</span><b>4</b></div>
+        <div class="dct-kv"><span>مقاطع أُرسلت / من الكاش</span><b>9 / 6</b></div>
+        <div class="dct-kv"><span>توكنات الدخل / الخرج</span><b>198 / 59</b></div>
+        <div class="dct-kv"><span>كلفة آخر نداء</span><b>1598 ms</b></div>
+        <div class="dct-kv"><span>فشل محاذاة / دفعات</span><b>0 / 0</b></div>
+        <div class="dct-kv"><span>حقن نصّي / سمات</span><b>3 / 17</b></div>
+        <div class="dct-kv"><span>استسلام / متأخّرة</span><b>0 / 0</b></div>
+        <div class="dct-kv"><span>وميض إنجليزي</span><b>9 ms</b></div>
+      </div>
+    </div>
+
+    <!-- data: layer.state[id] Surface Registry (Guarded roots counter preserved) -->
+    <div class="dct-sec">
+      <div class="dct-sec-title">
+        <span id="txt-surfaces-title">سجلّ الأسطح المستهدفة</span>
+        <b style="font-family:var(--font-mono);font-size:10.5px;color:var(--text-primary)">41 سطحاً · 2 نشط</b>
+      </div>
+      
+      <div class="dct-row">
+        <label><input type="checkbox" checked> <span id="txt-surf-responses">كتل الردود (Chat)</span></label>
+        <div class="dct-row-val">
+          <b>1 جذر</b>
+          <button class="dct-btn dct-mini">ترجم</button>
+        </div>
+      </div>
+      
+      <div class="dct-row">
+        <label><input type="checkbox"> <span id="txt-surf-thirdparty">لوحة طرف ثالث</span></label>
+        <div class="dct-row-val">
+          <b>12 + 17 سمات</b>
+          <button class="dct-btn dct-mini">ترجم</button>
+        </div>
+      </div>
+
+      <div class="dct-note" style="margin-top:6px;font-size:11px;" id="txt-surf-other">
+        و22 سطحاً آخر بلا جذر في هذه اللحظة (مُقاس برمجياً).
+      </div>
+    </div>
+
+    <!-- data: fetch('/dsh-translate-this/log?limit=6') Host Call Log -->
+    <div class="dct-sec">
+      <div class="dct-row" style="border:none;padding:0 0 6px;">
+        <span style="font-weight:600;font-size:11px;" id="txt-hostlog-title">سجلّ نداءات المضيف</span>
+        <button class="dct-btn dct-mini">تحديث السجل</button>
+      </div>
+      <div class="dct-note" style="font-size:11px;">1 نداء · 169 حرفاً · 1598ms · نجح · توكنات 198/59</div>
+    </div>
+
+    <!-- Fast Action Tools -->
+    <div class="dct-sec" style="display:flex;gap:6px;flex-wrap:wrap;background:transparent;border:none;padding:4px 0 0;">
+      <button class="dct-btn dct-mini" id="btn-cancel">إلغاء النداء</button>
+      <button class="dct-btn dct-mini" id="btn-clearcache">تفريغ الكاش</button>
+      <button class="dct-btn dct-mini" onclick="closePanel()" id="btn-close">إغلاق اللوحة</button>
+    </div>
+
+    <!-- Exact Diagnostic Probes for bug reports -->
+    <div class="dct-tech-line">probe: part:data-conversation-content(slot)=1 · part:data-tool(tool)=12 /m2</div>
+    <div class="dct-tech-line">dom: [data-slot] 41 · [data-tool] 5 · [data-document-preview] 0</div>
+  </details>
+</div>
+
+<!-- ======================= Script & Interaction ======================= -->
+<script>
+  const panel = document.getElementById('panel');
+  const rootHtml = document.getElementById('root-html');
+
+  // Panel Open / Close
+  function openPanel() { panel.hidden = false; }
+  function closePanel() { panel.hidden = true; }
+
+  // State Switcher (idle | working | done | fail)
+  function setState(state) {
+    panel.className = 'dct-panel state-' + state;
+    panel.hidden = false;
+    document.querySelectorAll('.preview-toolbar .preview-btn').forEach(b => {
+      if (['idle','working','done','fail'].some(s => b.textContent.includes(s))) {
+        b.classList.remove('active');
+      }
+    });
+    const activeBtn = Array.from(document.querySelectorAll('.preview-toolbar .preview-btn'))
+      .find(b => b.getAttribute('onclick')?.includes(state));
+    if (activeBtn) activeBtn.classList.add('active');
+  }
+
+  // Direction Switcher (RTL / LTR)
+  function setDirection(dir) {
+    rootHtml.setAttribute('dir', dir);
+    rootHtml.setAttribute('lang', dir === 'rtl' ? 'ar' : 'en');
+    
+    document.getElementById('btn-rtl').classList.toggle('active', dir === 'rtl');
+    document.getElementById('btn-ltr').classList.toggle('active', dir === 'ltr');
+
+    // Adapt text dynamically for demonstration of full RTL/LTR support
+    if (dir === 'ltr') {
+      document.getElementById('txt-title').textContent = 'Translate Content';
+      document.getElementById('txt-action').textContent = 'Translate This Content';
+      document.getElementById('txt-working-action').innerHTML = 'Translating… <span class="dct-spin" style="margin-inline-start:4px"></span>';
+      document.getElementById('txt-retry-action').textContent = 'Retry Translation';
+      document.getElementById('lbl-lang').textContent = 'To';
+      document.getElementById('txt-idle-desc').textContent = 'Ready — No active translation tasks.';
+      document.getElementById('txt-more-summary').textContent = 'Field Diagnostics & Metrics';
+      document.getElementById('txt-metrics-title').textContent = 'Performance & Cache Metrics';
+      document.getElementById('txt-surfaces-title').textContent = 'Target Surfaces Registry';
+      document.getElementById('txt-surf-responses').textContent = 'Chat Response Blocks';
+      document.getElementById('txt-surf-thirdparty').textContent = 'Third-Party Panel';
+      document.getElementById('txt-surf-other').textContent = 'And 22 other surfaces without root currently (measured).';
+      document.getElementById('txt-hostlog-title').textContent = 'Host Calls Log';
+      document.getElementById('btn-cancel').textContent = 'Cancel';
+      document.getElementById('btn-clearcache').textContent = 'Clear Cache';
+      document.getElementById('btn-close').textContent = 'Close Panel';
+    } else {
+      document.getElementById('txt-title').textContent = 'ترجمة المحتوى';
+      document.getElementById('txt-action').textContent = 'ترجم هذا المحتوى';
+      document.getElementById('txt-working-action').innerHTML = 'جارٍ الترجمة… <span class="dct-spin" style="margin-inline-start:4px"></span>';
+      document.getElementById('txt-retry-action').textContent = 'إعادة المحاولة';
+      document.getElementById('lbl-lang').textContent = 'إلى';
+      document.getElementById('txt-idle-desc').textContent = 'جاهز — لا توجد مهام ترجمة جارية حالياً.';
+      document.getElementById('txt-more-summary').textContent = 'التفاصيل والعدّادات الميدانية';
+      document.getElementById('txt-metrics-title').textContent = 'مؤشرات الأداء والكاش';
+      document.getElementById('txt-surfaces-title').textContent = 'سجلّ الأسطح المستهدفة';
+      document.getElementById('txt-surf-responses').textContent = 'كتل الردود (Chat)';
+      document.getElementById('txt-surf-thirdparty').textContent = 'لوحة طرف ثالث';
+      document.getElementById('txt-surf-other').textContent = 'و22 سطحاً آخر بلا جذر في هذه اللحظة (مُقاس برمجياً).';
+      document.getElementById('txt-hostlog-title').textContent = 'سجلّ نداءات المضيف';
+      document.getElementById('btn-cancel').textContent = 'إلغاء النداء';
+      document.getElementById('btn-clearcache').textContent = 'تفريغ الكاش';
+      document.getElementById('btn-close').textContent = 'إغلاق اللوحة';
+    }
+  }
+
+  function onLanguageChange(lang) {
+    if (lang === 'ar') setDirection('rtl');
+    else setDirection('ltr');
+  }
+
+  // Mandatory Behavior: Close on click outside and on Escape key
+  document.addEventListener('mousedown', (e) => {
+    if (!panel.hidden && !panel.contains(e.target) && !e.target.closest('.preview-toolbar')) {
+      closePanel();
+    }
+  }, true);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closePanel();
+  }, true);
+</script>
+</body>
+</html>
