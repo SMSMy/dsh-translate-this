@@ -48,6 +48,33 @@
 - `tools/live-probe.mjs` يُرجع **رمز خروج** (0/1) ويُشغّل سيناريو الإعدادات (محتوى+أسماء+تبديل تبويب) بجانب اللوحات الخمس.
 - هذا **أصلك التنافسي**: لا نسخة أخرى عندها بوابة قياس على 5 لوحات طرف ثالث — اجعلها حاسمة.
 
+## ٤) ما قِيس بعد التسليم (قياس مستقلّ — ابدأ من هنا)
+التسليم أعلاه يقول «صفر تعديل على الكود». **هذا لم يبقَ صحيحًا**: الشجرة فيها تعديل غير مُلتزَم على `lib/client.js` (‏`+426 −119`، آخر كتابة 19:08) **لا تُحمَّل أصلًا**. القياس:
+
+| البوّابة | النتيجة | النصّ |
+|---|---|---|
+| `acceptance/protocol.mjs` | **exit 1** | `ReferenceError: controlActionFor is not defined` عند بناء الوحدة |
+| `acceptance/run.mjs` | **0/2 · GATE CLOSED** | «NO VERDICT… page errors: ReferenceError: controlActionFor is not defined» |
+| `tools/live-probe.mjs` | **فشل** | «plugin handle not present after settle» (ومسبارك سجّلها أيضًا في `tools/live-probe.status`) |
+| `host` · `creed` · `leak-check` | سليمة | 12/12 · OPEN · CLEAN |
+
+**السبب بدقّة**: دالّتا `controlActionFor` (‏L738) و`looksLikeCode` (‏L~760) معرَّفتان **داخل** `createLayer` (نطاق مغلق)، وسطرا التصدير في نطاق الوحدة:
+```js
+L3355: exports.controlActionFor = controlActionFor;
+L3357: exports.looksLikeCode    = looksLikeCode;
+```
+⇒ `ReferenceError` عند أول سطر ⇒ **الطبقة كلها لا تُبنى**، فلا شريحة ولا رصيف ولا مسبار.
+
+**الإصلاح (أقلّ تغيير)**: انقل الدالّتين **النقيّتين** إلى نطاق الوحدة (خارج `createLayer`) وأبقِ عليهما كائنَ الطبقة كما هو (‏L2048‑2050 يعرضهما أصلًا)، أو احذف سطري التصدير إن لم يحتجهما فحصك. ثم:
+
+```powershell
+node acceptance\protocol.mjs      # 12/12 PROTOCOL GATE OPEN
+node acceptance\run.mjs --port <فريد>   # 2/2 · raf/noraf 21/21
+node tools\live-probe.mjs         # passed=5/5 على المدخلين
+```
+
+**قاعدة العمل من الآن**: لا تكتب فوق شجرة حمراء — شغّل `protocol` بعد كل تعديل قبل أي قياس حيّ. وميزانية النداءات الحقيقية ما زالت **صفرًا** عندك؛ استعملها في القياس الحيّ فقط بعد أن تُحمَّل الطبقة.
+
 ## ٣) قواعد ثابتة
 - **لا تلتزم** — المشرف يتولّى الالتزام بعد التحقق.
 - **لا تلمس** `acceptance/` القائم بأرقامه (21) ولا أي حزمة إضافة ولا الشل ولا بروفايل المالك.
