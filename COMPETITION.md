@@ -37,3 +37,22 @@
 - لا وسم · لا نشر · ولا لمس `dsh-arabic` · ولا لمس ملفات المالك.
 - الردود بالعربية الفصحى الطبيعية.
 - **لا يُنسب العمل إلى منفّذه** في رسائل الالتزام: تُوصَف تغيّرات الكود وسببها ودليلها.
+
+---
+
+## ملحقات ما قبل الانطلاق (2026-10-12)
+
+### أ) ملف البدء الموحّد `START.md` (في كل نسخة)
+يحمل: **الرسالة الواحدة** التي تُلصق في جلسة كل وكيل (نفسها للثلاثة) · بيئته (مجلده · بروفايله · منافذه · فرعه) · **جدول تحقّق الأدوات** · أوامر سريعة. وأُضيف `§١٠` إلى `COMPETE.md` في النسخ الثلاث بالتنبيهات نفسها.
+
+### ب) المتصفّح إلزاميّ للاختبار
+- **BrowserSkill**: الحزمة `@wxg-prc-cpg/browser-skill-dsh-plugin@0.3.2` (مثبّتة في بروفايل المالك `desktop`) وتحقن أدوات `browser_*`. من لا يجدها في أدواته **يثبّتها في جلسته ثم يستعملها** — ولا يُقبل فحصٌ نصّي وحده.
+
+### ج) خوادم MCP — أُضيف `mcptoplist`
+- **context7** كان قائمًا: `mcp-context7` → `https://mcp.context7.com/mcp` (مع `Authorization` اختياري من `CONTEXT7_API_KEY`).
+- **أُضيف**: `mcp-mcptoplist` → `https://mcptoplist.com/mcp` (Streamable HTTP، عام للقراءة، بلا مفتاح ولا جلسة — مُتحقَّق: `HTTP 200` و`serverInfo: MCP Toplist v1.1.0`).
+- **مكان الصفوف**: `~/.dsh/.agent-presets/standard-mcp.mcp-rows.yml` · ثم **الدمج الإلزامي**: `node standard-mcp-tool.mjs rebase` · ثم الفحص: `node standard-mcp-tool.mjs check` ⇒ الآن **30 صفًّا · 9 خوادم MCP · HEALTHY** (نسخ احتياطية: `.bak-mcptoplist-*` و`agent.cordis.yml.bak-mcptoplist`).
+- ⇒ **جلسة كل وكيل يجب أن تكون على preset «Standard + MCP»** ليجد `mcp__context7__*` و`mcp__mcptoplist__*` و`mcp__shamela__*`.
+
+### د) `agent-kit` — مرجع لا حاكم
+نُسخ `C:\Users\hshli\Desktop\agent-kit` (91 ملفًا) إلى جذر كل نسخة: عقيدة هندسية عامة (فحص المتصفح · دورة ويندوز · سقالات · مهارات). **لم يُدمج `AGENTS.md` الخاص به** كعقد جذر كي لا يتعارض مع `COMPETE.md` + `REBUILD.md` (الحاكم هنا). و`AGENTS.v2.md` الذي أشار إليه المالك **فارغ (0 بايت)** ⇒ لا شيء يُدمج منه.
