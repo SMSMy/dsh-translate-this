@@ -1271,6 +1271,47 @@ async function check20_pageChip() {
     `المواضع=${got.map((g) => (g ? Math.round(g.top) + ',' + Math.round(g.left) : 'null')).join(' | ')} (المتوقّع ${cases.map((c) => c.expect.top + ',' + c.expect.left).join(' | ')}) · صندوق منعدم⇒null=${degenerate} · مراكز main=${mains} · جذر الصفحة=${root ? (root.id || root.getAttribute('data-slot') || root.tagName) : 'null'}`);
 }
 
+/**
+ * 21 — the settings control: the page it sits in gets translated, the surface it declares is a
+ * HANDED one that survives a registry sync, and the same control restores it.
+ *
+ * Measured before the fix on the owner's GUI: the icon rendered, pressing it left `requests` at 0,
+ * and the registry held no `settings` key at all — `markSurface` requires the id to exist and
+ * `setSurface` returns silently when it does not (an id-based «settings» surface is a dead path).
+ */
+async function check21_settingsPath() {
+  resetQuiet();
+  const host = document.createElement('div');
+  host.setAttribute('data-slot', 'settings.header');
+  host.innerHTML = '<h2>Settings</h2><p id="oc-settings-prose">Enable the translator for this settings page and keep the translation after a registry sync runs.</p><span data-dct-ignore><button type="button">x</button></span>';
+  document.body.append(host);
+  const ledger = {
+    snapshot: () => ([
+      { type: 'slot', name: 'settings.header', kind: 'single', declaredBy: '(built-in)', occupants: [{ registrant: '@deepseek-ai/dsh-client-ui-settings-general' }], children: [] }
+    ])
+  };
+  const layer = MODULE.createLayer({ engine: pageEngine, slots: ledger, onChange: () => {} });
+  const before = host.textContent;
+  const scheduled = layer.translateElement(host);
+  const t0 = performance.now();
+  while (performance.now() - t0 < 8000 && !/[\u0600-\u06FF]/.test(host.textContent)) await wait(50);
+  const translated = /[\u0600-\u06FF]/.test(host.textContent);
+  const owner = host.getAttribute('data-dct-surface');       // whatever identity won the marker
+  const secondPressReadsTranslated = layer.translatedInElement(host);
+  layer.scanRoots();                       // the syncs that run every 200 ms after any click
+  await wait(400);
+  layer.scanRoots();
+  const survivesSyncs = /[\u0600-\u06FF]/.test(host.textContent);
+  layer.restoreElement(host);
+  await wait(200);
+  const restored = host.textContent === before;
+  layer.dispose();
+  host.remove();
+  record('21 · زرّ الإعدادات: الضغطة تترجم الصفحة · الترجمة تنجو من مزامنتي السجلّ · والضغطة الثانية تُرجع الأصل',
+    scheduled > 0 && translated && survivesSyncs && secondPressReadsTranslated && restored,
+    `مجدول=${scheduled} · مترجم=${translated} · حامل السمة=${owner || 'لا شيء'} · الضغطة الثانية تقرأ مترجمًا=${secondPressReadsTranslated} · نجا من مزامنتين=${survivesSyncs} · استُرجع=${restored}`);
+}
+
 function renderResults() {
   muted(() => {
     const tbody = document.querySelector('#results tbody');
@@ -1380,6 +1421,7 @@ async function runAll() {
   await check18_cancelStopsTheHost();
   await check19_outsideClose();
   await check20_pageChip();
+  await check21_settingsPath();
   const failed = RESULTS.filter((r) => !r.ok).length;
   muted(() => { document.getElementById('spState').textContent = failed === 0 ? 'كل الفحوص نجحت' : (failed + ' فشل') });
   log('== ' + (RESULTS.length - failed) + '/' + RESULTS.length + ' PASS ==');
