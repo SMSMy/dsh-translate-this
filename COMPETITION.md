@@ -57,7 +57,26 @@
 - **مكان الصفوف**: `~/.dsh/.agent-presets/standard-mcp.mcp-rows.yml` · ثم **الدمج الإلزامي**: `node standard-mcp-tool.mjs rebase` · ثم الفحص: `node standard-mcp-tool.mjs check` ⇒ الآن **30 صفًّا · 9 خوادم MCP · HEALTHY** (نسخ احتياطية: `.bak-mcptoplist-*` و`agent.cordis.yml.bak-mcptoplist`).
 - ⇒ **جلسة كل وكيل يجب أن تكون على preset «Standard + MCP»** ليجد `mcp__context7__*` و`mcp__mcptoplist__*` و`mcp__shamela__*`.
 
-### د) `agent-kit` — مرجع لا حاكم
+### و) preset الجلسات — أُصلح من الجذر بعد تقرير BLOCKED من «موس»
+- **العَرَض**: وكيل توقّف وقال إنه لا يجد `browser_*` ولا `mcp__*` في أدواته (وباقي المنافسين كذلك).
+- **السبب المقيس**: `~/.dsh/settings.yaml` **لم يكن موجودًا** (فقط `settings.yaml.bak-*` و`settings.yaml.imported`) ⇒ سقط الافتراضي إلى preset مشحون **بلا MCP**، فاختفت `mcp__context7__*` و`mcp__mcptoplist__*` من كل الجلسات.
+- **الإصلاح**: أُنشئ `~/.dsh/settings.yaml` بمفتاحين فقط (بلا مساس بمسار النموذج أو المزوّدين، ومُتحقَّق أنه YAML صالح):
+  ```yaml
+  agent-presets:
+    default: standard-mcp
+    modeSelectionEnabled: true
+  ```
+  ⇒ الجلسات الجديدة (بعد إعادة تشغيل DSH أو جلسة جديدة) تجد خوادم MCP.
+- **وأهمّ من ذلك — إزالة الحجب أصلًا**: `browser_*` **(BrowserSkill) تحسين لا شرط**: المشروع يملك متصفّحًا حقيقيًّا في `acceptance/cdp.mjs` (Chrome headless عبر CDP) لا يحتاج إضافة ولا مقعدًا، وقد نجح به مسبار «موس» نفسه. ⇒ كُتب `CONTINUE.md` في نسخة موس يصرّح بذلك ويمنع توقّف العمل لغياب الإضافة.
+
+### ح) «موس» يعمل في **OpenCode** لا في DSH — وهذا يغيّر الأدوات (2026-10-12)
+- **المعلومة**: المشرف أفاد أن موس يعمل من `C:\Users\hshli\Desktop\OpenCode.lnk` (تطبيق OpenCode للأجهزة: `%LOCALAPPDATA%\Programs\@opencode-aidesktop\OpenCode.exe`).
+- **النتيجة**: `browser_*` (BrowserSkill) و`mcp__*` **لا يمكن أن تظهر في OpenCode** — الأولى إضافة DSH، والثانية صفوف عميل MCP في DSH. ⇒ تقرير موس `BLOCKED` كان صحيحًا في وصفه، وكان الحجب **بيئيًّا**.
+- **الإصلاح لبيئة OpenCode**: أُضيف خادما MCP إلى إعدادها **هي**: `~/.config/opencode/opencode.json` ⇒ `context7` (`https://mcp.context7.com/mcp`) و`mcptoplist` (`https://mcptoplist.com/mcp`) بالشكل `{ type: "remote", url, enabled: true }` (نسخة احتياطية `opencode.json.bak-mcp-*`؛ والمزوّد والنموذج لم يُمسّا).
+- **المتصفّح في OpenCode**: لا إضافة، بل **أداة المستودع نفسها** `acceptance/cdp.mjs` (Chrome headless عبر CDP) — وهي ما شغّل به موس مسباره بنجاح. وُثّق ذلك في `CONTINUE.md §٦` (نسخة موس) وفي **`START.md §٧` في النسخ الأربع**.
+- **وأُبقي إصلاح DSH** (`settings.yaml` ⇒ preset افتراضي `standard-mcp`) لأنه يخدم أي جلسة DSH.
+
+### ز) `agent-kit` — مرجع لا حاكم
 نُسخ `C:\Users\hshli\Desktop\agent-kit` (91 ملفًا) إلى جذر كل نسخة: عقيدة هندسية عامة (فحص المتصفح · دورة ويندوز · سقالات · مهارات). **لم يُدمج `AGENTS.md` الخاص به** كعقد جذر كي لا يتعارض مع `COMPETE.md` + `REBUILD.md` (الحاكم هنا).
 
 ### هـ) عقد أسلوب العمل — `AGENTS.md` (منسوخ حرفيًّا)
