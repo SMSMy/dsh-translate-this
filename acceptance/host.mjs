@@ -390,6 +390,44 @@ check('H6 · inject مصفوفة بالخدمات الثلاث (الشكل ال�
   }
 }
 
+/* H8 — a blank segment in a batch must be rejected as EMPTY before model call. -------- */
+{
+  const host = fakeHost({ stream: batchStream() })
+  handlerRef = mount(host)
+  const res = await postRequest(ROUTE + '/translate', { segments: ['valid text', '   ', 'another text'], target: 'ar' })
+  const body = jsonOf(res.body)
+  check('H8 · مقطع فارغ داخل دفعة ⇒ 400 EMPTY قبل أي نداء للموديل',
+    res.status === 400 && body?.error?.code === 'EMPTY' && host.state.streamCalls === 0,
+    `status=${res.status} · code=${body?.error?.code ?? 'null'} · message="${body?.error?.message ?? ''}" · streamCalls=${host.state.streamCalls}`)
+}
+
+/* H9 — an unsupported target language must be rejected as INVALID_TARGET. ------------- */
+{
+  const host = fakeHost({ stream: batchStream() })
+  handlerRef = mount(host)
+  const res = await postRequest(ROUTE + '/translate', { segments: ['valid text'], target: 'klingon' })
+  const body = jsonOf(res.body)
+  check('H9 · لغة هدف غير مدعومة ⇒ 400 INVALID_TARGET قبل أي نداء',
+    res.status === 400 && body?.error?.code === 'INVALID_TARGET' && host.state.streamCalls === 0,
+    `status=${res.status} · code=${body?.error?.code ?? 'null'} · message="${body?.error?.message ?? ''}" · streamCalls=${host.state.streamCalls}`)
+}
+
+/* H10 — auth / quota errors must fail immediately, never masked as EMPTY_REPLY or retried. - */
+{
+  const authFailingStream = () => (options) => ({
+    async *[Symbol.asyncIterator] () {
+      throw new Error('401 Unauthorized: Invalid API key provided')
+    }
+  })
+  const host = fakeHost({ stream: authFailingStream() })
+  handlerRef = mount(host)
+  const res = await postRequest(ROUTE + '/translate', { segments: ['hello world'], target: 'ar' })
+  const body = jsonOf(res.body)
+  check('H10 · خطأ مفتاح/توثيق 401 ⇒ لا يُغلَّف كـ EMPTY_REPLY ولا يُعاد المحاولة (محاولة واحدة)',
+    res.status === 502 && body?.attempts === 1 && host.state.streamCalls === 1 && body?.error?.code !== 'EMPTY_REPLY',
+    `status=${res.status} · attempts=${body?.attempts} · code=${body?.error?.code ?? 'null'} · streamCalls=${host.state.streamCalls}`)
+}
+
 /* ------------------------------------------------------------------------- verdict --- */
 const failed = results.filter((r) => !r.ok).length
 console.log(`\n${results.length - failed}/${results.length} host checks passed  ${failed ? '· HOST GATE CLOSED' : '· HOST GATE OPEN'}`)
